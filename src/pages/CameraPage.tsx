@@ -3,6 +3,7 @@ import { loadOpenCV, type OpenCvModule } from '../lib/opencv/loadOpenCV';
 import { processHelloOpenCvFrame } from '../lib/opencv/helloFrameProcessor';
 import { segmentPiecesFromFrame, type PieceCandidate, type SegmentPiecesResult } from '../lib/opencv/segmentPieces';
 import { filterAndExtractPieces, type ExtractedPiece } from '../lib/opencv/extractPieces';
+import { classifyEdgeCornerMvp } from '../lib/opencv/classifyPieces';
 
 type CameraStatus = 'idle' | 'starting' | 'live' | 'captured' | 'error';
 
@@ -35,7 +36,8 @@ function useOverlayCanvas(
   debugText?: string,
   pieces?: PieceCandidate[],
   sourceSize?: { w: number; h: number },
-  selectedPieceId?: number | null
+  selectedPieceId?: number | null,
+  classById?: Map<number, 'corner' | 'edge' | 'interior'>
 ) {
   const rafRef = useRef<number | null>(null);
 
@@ -143,7 +145,8 @@ if (pieces && pieces.length > 0 && sourceSize && sourceSize.w > 0 && sourceSize.
   for (const p of pieces) {
     const isSelected = selectedPieceId != null && p.id === selectedPieceId;
     ctx.lineWidth = isSelected ? 3 : 2;
-    ctx.strokeStyle = isSelected ? '#ffcc00' : '#00ff66';
+    const cls = classById?.get(p.id);
+    ctx.strokeStyle = isSelected ? '#ffcc00' : cls === 'corner' ? '#ff5566' : cls === 'edge' ? '#33aaff' : '#00ff66';
     if (!p.contour || p.contour.length < 2) continue;
 
     ctx.beginPath();
@@ -185,7 +188,7 @@ if (pieces && pieces.length > 0 && sourceSize && sourceSize.w > 0 && sourceSize.
       }
       ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
     };
-  }, [overlayCanvasRef, status, debugText, pieces, sourceSize]);
+  }, [overlayCanvasRef, status, debugText, pieces, sourceSize, selectedPieceId, classById]);
 }
 
 export default function CameraPage() {
@@ -230,7 +233,15 @@ const [segResult, setSegResult] = useState<SegmentPiecesResult | null>(null);
 const [extractStatus, setExtractStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
 const [extractError, setExtractError] = useState<string>('');
 const [extractDebug, setExtractDebug] = useState<string>('');
+  const [classifyDebug, setClassifyDebug] = useState<string>('');
 const [extractedPieces, setExtractedPieces] = useState<ExtractedPiece[]>([]);
+  const classById = useMemo(() => {
+    const m = new Map<number, 'corner' | 'edge' | 'interior'>();
+    for (const p of extractedPieces) {
+      if (p.classification) m.set(p.id, p.classification);
+    }
+    return m;
+  }, [extractedPieces]);
 const [selectedPieceId, setSelectedPieceId] = useState<number | null>(null);
 
 const [filterMinSolidity, setFilterMinSolidity] = useState<number>(0.80);
@@ -253,7 +264,7 @@ useEffect(() => {
   cannyHighRef.current = cannyHigh;
 }, [cannyHigh]);
 
-useOverlayCanvas(overlayCanvasRef, status, streamInfo, segPieces, sourceSize, selectedPieceId);
+useOverlayCanvas(overlayCanvasRef, status, streamInfo, segPieces, sourceSize, selectedPieceId, classById);
 
 const stopHelloOpenCvProcessing = () => {
   if (processingTimerRef.current != null) {
@@ -551,6 +562,47 @@ const startCamera = async () => {
       setErrorMessage(formatError(err));
     }
   };
+const classifyPiecesNow = async () => {
+  try {
+    setSegError('');
+    setClassifyDebug('');
+    if (opencvStatus === 'idle') {
+      setOpenCvStatus('loading');
+    }
+
+    if (!cvRef.current) {
+      const cv = await loadOpenCV();
+      cvRef.current = cv;
+      setOpenCvStatus('ready');
+
+      const buildInfo: string | undefined = cv?.getBuildInformation?.();
+      if (buildInfo) setOpenCvBuildInfoLine(buildInfo.split('\n')[0] ?? '');
+    }
+
+    const cv = cvRef.current;
+    const inputCanvas = processingInputCanvasRef.current;
+    if (!cv || !inputCanvas) throw new Error('Missing OpenCV/canvas refs.');
+    if (!segResult) throw new Error('Run segmentation first');
+    if (!extractedPieces.length) throw new Error('Extract pieces first');
+
+    setIsProcessing(true);
+
+    const { pieces, debug } = classifyEdgeCornerMvp({
+      cv,
+      processedFrameCanvas: inputCanvas,
+      pieces: extractedPieces
+    });
+
+    setExtractedPieces(pieces);
+    setClassifyDebug(debug);
+  } catch (e) {
+    setSegError(`Classification error: ${formatError(e)}`);
+  } finally {
+    setIsProcessing(false);
+  }
+};
+
+
 
   const stopCamera = () => {
     stopStream();
@@ -801,12 +853,21 @@ const startCamera = async () => {
 
     <button
       className="btn"
+      onClick={classifyPiecesNow}
+      disabled={opencvStatus === 'loading' || isProcessing || extractedPieces.length === 0}
+    >
+      Classify edges/corners
+    </button>
+
+    <button
+      className="btn"
       onClick={() => {
         setExtractedPieces([]);
         setSelectedPieceId(null);
         setExtractStatus('idle');
         setExtractError('');
         setExtractDebug('');
+        setClassifyDebug('');
       }}
       disabled={extractedPieces.length === 0 && extractStatus === 'idle'}
     >
@@ -900,6 +961,13 @@ const startCamera = async () => {
     </p>
   )}
 
+
+{classifyDebug ? (
+  <p className="muted" style={{ marginTop: 10, whiteSpace: 'pre-line' }}>
+    {classifyDebug}
+  </p>
+) : null}
+
   {extractedPieces.length ? (
     <div className="pieceGrid" style={{ marginTop: 12 }}>
       {extractedPieces.map((p) => (
@@ -914,6 +982,9 @@ const startCamera = async () => {
           <div className="pieceMeta">
             <span className="mono">#{p.id}</span>
             <span className="muted">{Math.round(p.solidity * 100)}%</span>
+            {p.classification ? (
+              <span className={`badge badge_${p.classification}`}>{p.classification}</span>
+            ) : null}
           </div>
         </button>
       ))}

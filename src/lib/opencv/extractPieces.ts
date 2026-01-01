@@ -25,6 +25,11 @@ export type ExtractedPiece = {
   previewUrl: string;
   /** Contour points in SOURCE coordinates (same as segmentation). */
   contourSource: Array<{ x: number; y: number }>;
+  /** Contour points in PROCESSED coordinates (downscaled processing frame). */
+  contourProcessed: Array<{ x: number; y: number }>;
+  /** Optional rule-based classification result (Step 6). */
+  classification?: 'corner' | 'edge' | 'interior';
+  classificationDebug?: string;
 };
 
 function clamp(v: number, min: number, max: number) {
@@ -215,7 +220,8 @@ outVec.delete();
           solidity,
           aspectRatio: aspect,
           previewUrl,
-          contourSource: cand.contour
+          contourSource: cand.contour,
+          contourProcessed: ptsProc
         });
 
         // Cleanup ROI mats
