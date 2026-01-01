@@ -37,7 +37,8 @@ export default defineConfig({
 workbox: {
   // OpenCV bundles are huge. Do NOT precache them (Workbox default limit is 2 MiB).
   // They will be fetched on-demand and then cached at runtime.
-  globIgnores: ['**/opencv-*.js', '**/*.wasm'],
+  globIgnores: ['**/opencv-*.js', '**/*.wasm',
+          '**/vendor/opencv/opencv.js'],
   runtimeCaching: [
     {
       urlPattern: /\/assets\/opencv-.*\.js$/i,

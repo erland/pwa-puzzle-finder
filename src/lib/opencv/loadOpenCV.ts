@@ -1,32 +1,127 @@
 /**
- * Lazy OpenCV loader.
+ * Stable OpenCV loader for Vite/PWA.
  *
- * We intentionally load OpenCV only on user action:
- * - Keeps initial bundle smaller.
- * - Keeps Jest/jsdom tests stable (no WASM).
+ * Why:
+ * - OpenCV's Emscripten bundle is sensitive to bundler transforms.
+ * - Serving `opencv.js` from /public (static) avoids Vite rewriting the file.
+ *
+ * How it works:
+ * - `npm install` (postinstall) copies opencv.js -> public/vendor/opencv/opencv.js
+ * - This loader injects a *classic script* tag pointing at that file
+ * - We ensure a global `var Module = ...` exists before loading
+ * - We resolve once runtime is initialized and return the best "cv" handle available
+ *
+ * Notes:
+ * - Many OpenCV.js builds expose `window.cv`.
+ * - Some expose the API on `window.Module` instead. We alias it to `window.cv`.
  */
 export type OpenCvModule = any;
 
+const OPENCV_PUBLIC_REL_PATH = 'vendor/opencv/opencv.js';
+const OPENCV_SCRIPT_ATTR = 'data-opencv-js';
+
 let cachedPromise: Promise<OpenCvModule> | null = null;
+
+function looksLikeOpenCv(obj: any): boolean {
+  return !!obj && typeof obj.Mat === 'function' && typeof obj.cvtColor === 'function';
+}
+
+function getOpenCvCandidate(): any | undefined {
+  const g = globalThis as any;
+  if (looksLikeOpenCv(g.cv)) return g.cv;
+  if (looksLikeOpenCv(g.Module)) return g.Module;
+  if (g.Module && looksLikeOpenCv(g.Module.cv)) return g.Module.cv;
+  return undefined;
+}
+
+function ensureGlobalModuleVar() {
+  const g = globalThis as any;
+  // Ensure the property exists.
+  if (!g.Module) g.Module = {};
+
+  // Ensure the *variable* Module exists in the global scope for classic scripts.
+  // We do this by injecting a tiny classic script once.
+  if (!document.querySelector('script[data-opencv-module-var="true"]')) {
+    const s = document.createElement('script');
+    s.setAttribute('data-opencv-module-var', 'true');
+    s.text = 'window.Module = window.Module || {}; var Module = window.Module;';
+    document.head.appendChild(s);
+  }
+
+  return g.Module;
+}
+
+function getScriptSrc(): string {
+  // Base is '/pwa-puzzle-finder/' for GitHub Pages.
+  const base = (import.meta as any).env?.BASE_URL || '/';
+  const normalizedBase = base.endsWith('/') ? base : base + '/';
+  return normalizedBase + OPENCV_PUBLIC_REL_PATH;
+}
+
+function ensureScriptInjected(): HTMLScriptElement {
+  const existing = document.querySelector(`script[${OPENCV_SCRIPT_ATTR}="true"]`) as HTMLScriptElement | null;
+  if (existing) return existing;
+
+  const script = document.createElement('script');
+  script.setAttribute(OPENCV_SCRIPT_ATTR, 'true');
+  script.src = getScriptSrc();
+  script.async = true;
+  script.crossOrigin = 'anonymous';
+  document.head.appendChild(script);
+  return script;
+}
 
 export async function loadOpenCV(): Promise<OpenCvModule> {
   if (cachedPromise) return cachedPromise;
 
-  cachedPromise = (async () => {
+  cachedPromise = new Promise<OpenCvModule>((resolve, reject) => {
     if (typeof window === 'undefined') {
-      throw new Error('OpenCV can only be loaded in a browser environment.');
+      reject(new Error('OpenCV can only be loaded in a browser environment.'));
+      return;
     }
 
-    // opencv-js-wasm exports a default async loader function that resolves to the cv module.
-    const mod: any = await import('opencv-js-wasm');
-    const loader: any = mod?.default ?? mod;
-    if (typeof loader !== 'function') {
-      throw new Error('OpenCV loader is not a function (unexpected module shape).');
+    const existing = getOpenCvCandidate();
+    if (existing) {
+      (globalThis as any).cv = existing;
+      resolve(existing);
+      return;
     }
 
-    const cv: any = await loader();
-    return cv;
-  })();
+    const Module = ensureGlobalModuleVar();
+
+    // Chain any existing onRuntimeInitialized if present.
+    const prevInit = (Module as any).onRuntimeInitialized;
+    (Module as any).onRuntimeInitialized = () => {
+      try {
+        if (typeof prevInit === 'function') prevInit();
+      } finally {
+        const candidate = getOpenCvCandidate();
+        if (!candidate) {
+          reject(new Error('OpenCV runtime initialized, but no global `cv`/`Module` OpenCV API was found.'));
+          return;
+        }
+        // Alias to window.cv to simplify downstream usage.
+        (globalThis as any).cv = candidate;
+        resolve(candidate);
+      }
+    };
+
+    const script = ensureScriptInjected();
+
+    script.addEventListener('error', () => {
+      reject(new Error(`Failed to load opencv.js script at: ${script.src}`));
+    });
+
+    script.addEventListener('load', () => {
+      // Some builds populate cv immediately after load (before runtime init callback).
+      const candidate = getOpenCvCandidate();
+      if (candidate) {
+        (globalThis as any).cv = candidate;
+        resolve(candidate);
+      }
+      // Otherwise wait for onRuntimeInitialized.
+    });
+  });
 
   return cachedPromise;
 }

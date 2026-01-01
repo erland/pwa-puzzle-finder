@@ -50,7 +50,8 @@ export function processHelloOpenCvFrame(params: {
   ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
 
   // OpenCV processing.
-  const src = cv.imread(inputCanvas);
+  const imageData = ctx.getImageData(0, 0, targetWidth, targetHeight);
+  const src = cv.matFromImageData(imageData);
   const gray = new cv.Mat();
   const edges = new cv.Mat();
   const rgba = new cv.Mat();

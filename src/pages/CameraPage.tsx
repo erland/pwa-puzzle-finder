@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { loadOpenCV, type OpenCvModule } from '../lib/opencv/loadOpenCV';
 import { processHelloOpenCvFrame } from '../lib/opencv/helloFrameProcessor';
+import { segmentPiecesFromFrame, type PieceCandidate } from '../lib/opencv/segmentPieces';
 
 type CameraStatus = 'idle' | 'starting' | 'live' | 'captured' | 'error';
 
@@ -30,7 +31,9 @@ function safeGet2DContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D |
 function useOverlayCanvas(
   overlayCanvasRef: RefObject<HTMLCanvasElement>,
   status: CameraStatus,
-  debugText?: string
+  debugText?: string,
+  pieces?: PieceCandidate[],
+  sourceSize?: { w: number; h: number }
 ) {
   const rafRef = useRef<number | null>(null);
 
@@ -124,6 +127,45 @@ function useOverlayCanvas(
         });
       }
 
+// Draw piece contours (segmentation result), mapped from source frame to viewport coordinates.
+if (pieces && pieces.length > 0 && sourceSize && sourceSize.w > 0 && sourceSize.h > 0) {
+  const scale = Math.min(w / sourceSize.w, h / sourceSize.h);
+  const offX = (w - sourceSize.w * scale) / 2;
+  const offY = (h - sourceSize.h * scale) / 2;
+
+  ctx.globalAlpha = 0.9;
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#00ff66';
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+  ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif';
+
+  for (let i = 0; i < pieces.length; i++) {
+    const p = pieces[i];
+    if (!p.contour || p.contour.length < 2) continue;
+
+    ctx.beginPath();
+    const p0 = p.contour[0];
+    ctx.moveTo(p0.x * scale + offX, p0.y * scale + offY);
+    for (let k = 1; k < p.contour.length; k++) {
+      const pk = p.contour[k];
+      ctx.lineTo(pk.x * scale + offX, pk.y * scale + offY);
+    }
+    ctx.closePath();
+    ctx.stroke();
+
+    // Label near bbox top-left
+    const lx = p.bbox.x * scale + offX;
+    const ly = p.bbox.y * scale + offY;
+    const label = `#${p.id}`;
+    const tw = ctx.measureText(label).width;
+    ctx.fillRect(lx, Math.max(0, ly - 16), tw + 10, 16);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(label, lx + 5, Math.max(12, ly - 4));
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+  }
+}
+
+
       rafRef.current = window.requestAnimationFrame(draw);
     };
 
@@ -140,7 +182,7 @@ function useOverlayCanvas(
       }
       ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
     };
-  }, [overlayCanvasRef, status, debugText]);
+  }, [overlayCanvasRef, status, debugText, pieces, sourceSize]);
 }
 
 export default function CameraPage() {
@@ -172,7 +214,16 @@ const [isProcessing, setIsProcessing] = useState<boolean>(false);
 const [cannyLow, setCannyLow] = useState<number>(60);
 const [cannyHigh, setCannyHigh] = useState<number>(120);
 
+  // Segmentation tuning (piece vs background)
+  const [minAreaRatio, setMinAreaRatio] = useState<number>(0.0015);
+  const [morphKernel, setMorphKernel] = useState<number>(5);
+  const [segStatus, setSegStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+  const [segError, setSegError] = useState<string>('');
+  const [segPieces, setSegPieces] = useState<PieceCandidate[]>([]);
+  const [segDebug, setSegDebug] = useState<string>('');
+
 const [streamInfo, setStreamInfo] = useState<string>('');
+  const [sourceSize, setSourceSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
 
 const mediaDevices = useMemo(() => getMediaDevices(), []);
 
@@ -184,7 +235,7 @@ useEffect(() => {
   cannyHighRef.current = cannyHigh;
 }, [cannyHigh]);
 
-useOverlayCanvas(overlayCanvasRef, status, streamInfo);
+useOverlayCanvas(overlayCanvasRef, status, streamInfo, segPieces, sourceSize);
 
 const stopHelloOpenCvProcessing = () => {
   if (processingTimerRef.current != null) {
@@ -275,7 +326,81 @@ const startHelloOpenCvProcessing = async () => {
     if (v) v.srcObject = null;
   };
 
-  const startCamera = async () => {
+  
+
+const segmentPiecesNow = async () => {
+  setSegError('');
+  setSegDebug('');
+  setSegStatus('running');
+
+  try {
+    if (opencvStatus === 'idle') {
+      setOpenCvStatus('loading');
+    }
+
+    if (!cvRef.current) {
+      const cv = await loadOpenCV();
+      cvRef.current = cv;
+      setOpenCvStatus('ready');
+
+      const buildInfo: string | undefined = cv?.getBuildInformation?.();
+      const firstLine = buildInfo
+        ?.split('\n')
+        .map((s: string) => s.trim())
+        .filter(Boolean)[0];
+      setOpenCvBuildInfoLine(firstLine ?? 'OpenCV loaded');
+    }
+
+    const cv = cvRef.current;
+    const inputCanvas = processingInputCanvasRef.current;
+    const outputCanvas = processedCanvasRef.current;
+
+    const video = videoRef.current;
+    const still = stillCanvasRef.current;
+
+    if (!cv || !inputCanvas || !outputCanvas) {
+      throw new Error('Missing OpenCV/canvas refs.');
+    }
+
+    const source = status === 'captured' ? still : video;
+    if (!source) {
+      throw new Error('No frame source available (camera not started?).');
+    }
+
+    const result = segmentPiecesFromFrame({
+      cv,
+      source: source as any,
+      inputCanvas,
+      outputCanvas,
+      options: {
+        targetWidth: 640,
+        minAreaRatio,
+        morphKernelSize: morphKernel
+      }
+    });
+
+    setSegPieces(result.pieces);
+    setSegDebug(
+      [
+        `Segmentation: ${result.pieces.length} piece(s)`,
+        `Contours: ${result.debug.contoursFound}`,
+        `Proc: ${result.debug.processedWidth}×${result.debug.processedHeight}${result.debug.inverted ? ' (inverted)' : ''}`
+      ].join('\n')
+    );
+    setSegStatus('done');
+  } catch (err) {
+    setSegStatus('error');
+    setSegError(formatError(err));
+  }
+};
+
+const clearSegmentation = () => {
+  setSegPieces([]);
+  setSegStatus('idle');
+  setSegError('');
+  setSegDebug('');
+};
+const startCamera = async () => {
     setErrorMessage('');
     if (!mediaDevices?.getUserMedia) {
       setStatus('error');
@@ -316,6 +441,7 @@ const startHelloOpenCvProcessing = async () => {
       const w = settings?.width ?? v.videoWidth;
       const h = settings?.height ?? v.videoHeight;
       setStreamInfo(`Stream: ${w}×${h}`);
+      setSourceSize({ w: Number(w) || v.videoWidth || 0, h: Number(h) || v.videoHeight || 0 });
 
       // Clear any old captured frame
       const still = stillCanvasRef.current;
@@ -336,6 +462,10 @@ const startHelloOpenCvProcessing = async () => {
     stopStream();
     setStreamInfo('');
     setStatus('idle');
+    setSegPieces([]);
+    setSegStatus('idle');
+    setSegError('');
+    setSegDebug('');
   };
 
   const captureFrame = () => {
@@ -346,6 +476,8 @@ const startHelloOpenCvProcessing = async () => {
     const vw = v.videoWidth || 0;
     const vh = v.videoHeight || 0;
     if (vw === 0 || vh === 0) return;
+
+    setSourceSize({ w: vw, h: vh });
 
     still.width = vw;
     still.height = vh;
@@ -414,16 +546,16 @@ const startHelloOpenCvProcessing = async () => {
         <h2>Controls</h2>
 
         <div className="buttonRow">
-          <button onClick={startCamera} disabled={status === 'starting' || status === 'live' || status === 'captured'}>
+          <button className="btn btnPrimary" onClick={startCamera} disabled={status === 'starting' || status === 'live' || status === 'captured'}>
             Start camera
           </button>
-          <button onClick={stopCamera} disabled={status === 'idle'}>
+          <button className="btn btnDanger" onClick={stopCamera} disabled={status === 'idle'}>
             Stop camera
           </button>
-          <button onClick={captureFrame} disabled={status !== 'live'}>
+          <button className="btn" onClick={captureFrame} disabled={status !== 'live'}>
             Capture frame
           </button>
-          <button onClick={backToLive} disabled={status !== 'captured'}>
+          <button className="btn" onClick={backToLive} disabled={status !== 'captured'}>
             Back to live
           </button>
 </div>
@@ -438,7 +570,7 @@ const startHelloOpenCvProcessing = async () => {
   </div>
 
   <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
-    <button
+    <button className="btn"
       onClick={isProcessing ? stopHelloOpenCvProcessing : startHelloOpenCvProcessing}
       disabled={status !== 'live' && !isProcessing}
     >
@@ -490,6 +622,70 @@ const startHelloOpenCvProcessing = async () => {
   </p>
 </div>
 
+
+
+<div className="opencvPanel" aria-label="Segmentation panel" style={{ marginTop: 12 }}>
+  <div className="row">
+    <strong>Segmentation</strong>
+    <span className="muted" style={{ marginLeft: 10 }}>
+      State: <strong>{segStatus}</strong>
+      {segPieces.length ? <> · Pieces: <strong>{segPieces.length}</strong></> : null}
+    </span>
+  </div>
+
+  <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
+    <button className="btn btnPrimary" onClick={segmentPiecesNow} disabled={(status !== 'live' && status !== 'captured') || opencvStatus === 'loading' || isProcessing}>
+      Segment pieces
+    </button>
+    <button className="btn" onClick={clearSegmentation} disabled={segPieces.length === 0 && segStatus === 'idle'}>
+      Clear
+    </button>
+
+    <label className="rangeField">
+      <span className="muted">Min area</span>
+      <input
+        type="range"
+        min={0.0005}
+        max={0.01}
+        step={0.0005}
+        value={minAreaRatio}
+        onChange={(e) => setMinAreaRatio(Number(e.target.value))}
+        disabled={segStatus === 'running'}
+      />
+      <span className="mono">{minAreaRatio.toFixed(4)}</span>
+    </label>
+
+    <label className="rangeField">
+      <span className="muted">Morph k</span>
+      <input
+        type="range"
+        min={3}
+        max={15}
+        step={2}
+        value={morphKernel}
+        onChange={(e) => setMorphKernel(Number(e.target.value))}
+        disabled={segStatus === 'running'}
+      />
+      <span className="mono">{morphKernel}</span>
+    </label>
+  </div>
+
+  {segError ? (
+    <p className="cameraError" role="alert" style={{ marginTop: 12 }}>
+      Segmentation error: {segError}
+    </p>
+  ) : null}
+
+  {segDebug ? (
+    <p className="muted" style={{ marginTop: 10, whiteSpace: 'pre-line' }}>
+      {segDebug}
+    </p>
+  ) : (
+    <p className="muted" style={{ marginTop: 10 }}>
+      Tip: Use a plain, contrasting background and avoid overlapping pieces for best results.
+    </p>
+  )}
+</div>
 <p className="muted" style={{ marginTop: 12 }}>
 
           Status: <strong>{status}</strong>

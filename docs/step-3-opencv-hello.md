@@ -41,3 +41,7 @@ You should see a live edge preview in the processed canvas.
 
 ## PWA caching note
 - OpenCV bundles are **excluded from precache** (too large for Workbox default limits) and are cached on-demand via **runtime caching**.
+
+
+## OpenCV loading (static)
+OpenCV is served from `public/vendor/opencv/opencv.js` (copied on `postinstall`) and loaded via a classic `<script>` tag. This avoids ESM/bundler issues.

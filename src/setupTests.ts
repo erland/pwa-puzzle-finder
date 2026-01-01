@@ -34,6 +34,8 @@ Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', {
       moveTo: jest.fn(),
       lineTo: jest.fn(),
       stroke: jest.fn(),
+      closePath: jest.fn(),
+      strokeRect: jest.fn(),
       fillRect: jest.fn(),
       fillText: jest.fn(),
       measureText: jest.fn((text: string) => ({ width: (text?.length ?? 0) * 7 } as TextMetrics)),
