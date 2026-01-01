@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { loadOpenCV, type OpenCvModule } from '../lib/opencv/loadOpenCV';
 import { processHelloOpenCvFrame } from '../lib/opencv/helloFrameProcessor';
-import { segmentPiecesFromFrame, type PieceCandidate } from '../lib/opencv/segmentPieces';
+import { segmentPiecesFromFrame, type PieceCandidate, type SegmentPiecesResult } from '../lib/opencv/segmentPieces';
+import { filterAndExtractPieces, type ExtractedPiece } from '../lib/opencv/extractPieces';
 
 type CameraStatus = 'idle' | 'starting' | 'live' | 'captured' | 'error';
 
@@ -33,7 +34,8 @@ function useOverlayCanvas(
   status: CameraStatus,
   debugText?: string,
   pieces?: PieceCandidate[],
-  sourceSize?: { w: number; h: number }
+  sourceSize?: { w: number; h: number },
+  selectedPieceId?: number | null
 ) {
   const rafRef = useRef<number | null>(null);
 
@@ -138,9 +140,10 @@ if (pieces && pieces.length > 0 && sourceSize && sourceSize.w > 0 && sourceSize.
   ctx.strokeStyle = '#00ff66';
   ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
   ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif';
-
-  for (let i = 0; i < pieces.length; i++) {
-    const p = pieces[i];
+  for (const p of pieces) {
+    const isSelected = selectedPieceId != null && p.id === selectedPieceId;
+    ctx.lineWidth = isSelected ? 3 : 2;
+    ctx.strokeStyle = isSelected ? '#ffcc00' : '#00ff66';
     if (!p.contour || p.contour.length < 2) continue;
 
     ctx.beginPath();
@@ -221,6 +224,21 @@ const [cannyHigh, setCannyHigh] = useState<number>(120);
   const [segError, setSegError] = useState<string>('');
   const [segPieces, setSegPieces] = useState<PieceCandidate[]>([]);
   const [segDebug, setSegDebug] = useState<string>('');
+const [segResult, setSegResult] = useState<SegmentPiecesResult | null>(null);
+
+// Step 5: filtering + per-piece extraction (transparent previews)
+const [extractStatus, setExtractStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
+const [extractError, setExtractError] = useState<string>('');
+const [extractDebug, setExtractDebug] = useState<string>('');
+const [extractedPieces, setExtractedPieces] = useState<ExtractedPiece[]>([]);
+const [selectedPieceId, setSelectedPieceId] = useState<number | null>(null);
+
+const [filterMinSolidity, setFilterMinSolidity] = useState<number>(0.80);
+const [filterMaxAspect, setFilterMaxAspect] = useState<number>(4.0);
+const [filterBorderMargin, setFilterBorderMargin] = useState<number>(6);
+const [filterPadding, setFilterPadding] = useState<number>(6);
+const [filterMaxPieces, setFilterMaxPieces] = useState<number>(80);
+
 
 const [streamInfo, setStreamInfo] = useState<string>('');
   const [sourceSize, setSourceSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -235,7 +253,7 @@ useEffect(() => {
   cannyHighRef.current = cannyHigh;
 }, [cannyHigh]);
 
-useOverlayCanvas(overlayCanvasRef, status, streamInfo, segPieces, sourceSize);
+useOverlayCanvas(overlayCanvasRef, status, streamInfo, segPieces, sourceSize, selectedPieceId);
 
 const stopHelloOpenCvProcessing = () => {
   if (processingTimerRef.current != null) {
@@ -328,7 +346,7 @@ const startHelloOpenCvProcessing = async () => {
 
   
 
-const segmentPiecesNow = async () => {
+const segmentPiecesNow = async (): Promise<SegmentPiecesResult | null> => {
   setSegError('');
   setSegDebug('');
   setSegStatus('running');
@@ -380,6 +398,14 @@ const segmentPiecesNow = async () => {
     });
 
     setSegPieces(result.pieces);
+    setSegResult(result);
+
+    // Any time we re-run segmentation, reset extraction so UI stays consistent.
+    setExtractedPieces([]);
+    setSelectedPieceId(null);
+    setExtractStatus('idle');
+    setExtractError('');
+    setExtractDebug('');
     setSegDebug(
       [
         `Segmentation: ${result.pieces.length} piece(s)`,
@@ -388,17 +414,85 @@ const segmentPiecesNow = async () => {
       ].join('\n')
     );
     setSegStatus('done');
+    return result;
   } catch (err) {
     setSegStatus('error');
     setSegError(formatError(err));
+    return null;
+  }
+};
+
+const extractPiecesNow = async () => {
+  setExtractError('');
+  setExtractDebug('');
+  setExtractStatus('running');
+
+  try {
+    if (opencvStatus === 'idle') {
+      setOpenCvStatus('loading');
+    }
+
+    if (!cvRef.current) {
+      const cv = await loadOpenCV();
+      cvRef.current = cv;
+      setOpenCvStatus('ready');
+
+      const buildInfo: string | undefined = cv?.getBuildInformation?.();
+      if (buildInfo) {
+        setOpenCvBuildInfoLine(buildInfo.split('\n')[0] ?? '');
+      }
+    }
+
+    const cv = cvRef.current;
+    const inputCanvas = processingInputCanvasRef.current;
+    if (!cv || !inputCanvas) {
+      throw new Error('Missing OpenCV/canvas refs.');
+    }
+
+    // Ensure we have a current segmentation result to extract from.
+    const seg = segResult ?? (await segmentPiecesNow());
+    if (!seg || seg.pieces.length === 0) {
+      throw new Error('No segmentation result available (segment pieces first).');
+    }
+
+    const { pieces, debug } = filterAndExtractPieces({
+      cv,
+      segmentation: seg,
+      processedFrameCanvas: inputCanvas,
+      options: {
+        borderMarginPx: filterBorderMargin,
+        paddingPx: filterPadding,
+        minSolidity: filterMinSolidity,
+        maxAspectRatio: filterMaxAspect,
+        maxPieces: filterMaxPieces
+      }
+    });
+
+    setExtractedPieces(pieces);
+    setExtractDebug(debug);
+    setExtractStatus('done');
+
+    if (pieces.length > 0) {
+      setSelectedPieceId(pieces[0].id);
+    }
+  } catch (err) {
+    setExtractStatus('error');
+    setExtractError(formatError(err));
   }
 };
 
 const clearSegmentation = () => {
   setSegPieces([]);
+  setSegResult(null);
   setSegStatus('idle');
   setSegError('');
   setSegDebug('');
+
+  setExtractedPieces([]);
+  setSelectedPieceId(null);
+  setExtractStatus('idle');
+  setExtractError('');
+  setExtractDebug('');
 };
 const startCamera = async () => {
     setErrorMessage('');
@@ -685,6 +779,148 @@ const startCamera = async () => {
       Tip: Use a plain, contrasting background and avoid overlapping pieces for best results.
     </p>
   )}
+
+<div className="opencvPanel" aria-label="Pieces panel" style={{ marginTop: 12 }}>
+  <div className="row">
+    <strong>Per-piece extraction</strong>
+    <span className="muted" style={{ marginLeft: 10 }}>
+      State: <strong>{extractStatus}</strong>
+      {extractedPieces.length ? <> · Extracted: <strong>{extractedPieces.length}</strong></> : null}
+      {selectedPieceId != null ? <> · Selected: <strong>#{selectedPieceId}</strong></> : null}
+    </span>
+  </div>
+
+  <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
+    <button
+      className="btn btnPrimary"
+      onClick={extractPiecesNow}
+      disabled={(status !== 'live' && status !== 'captured') || !segResult || segStatus === 'running' || extractStatus === 'running' || isProcessing}
+    >
+      Extract pieces
+    </button>
+
+    <button
+      className="btn"
+      onClick={() => {
+        setExtractedPieces([]);
+        setSelectedPieceId(null);
+        setExtractStatus('idle');
+        setExtractError('');
+        setExtractDebug('');
+      }}
+      disabled={extractedPieces.length === 0 && extractStatus === 'idle'}
+    >
+      Clear
+    </button>
+
+    <label className="rangeField">
+      <span className="muted">Min solidity</span>
+      <input
+        type="range"
+        min={0.5}
+        max={0.98}
+        step={0.01}
+        value={filterMinSolidity}
+        onChange={(e) => setFilterMinSolidity(Number(e.target.value))}
+        disabled={extractStatus === 'running'}
+      />
+      <span className="mono">{filterMinSolidity.toFixed(2)}</span>
+    </label>
+
+    <label className="rangeField">
+      <span className="muted">Max aspect</span>
+      <input
+        type="range"
+        min={1}
+        max={8}
+        step={0.25}
+        value={filterMaxAspect}
+        onChange={(e) => setFilterMaxAspect(Number(e.target.value))}
+        disabled={extractStatus === 'running'}
+      />
+      <span className="mono">{filterMaxAspect.toFixed(2)}</span>
+    </label>
+
+    <label className="rangeField">
+      <span className="muted">Border margin</span>
+      <input
+        type="range"
+        min={0}
+        max={30}
+        step={1}
+        value={filterBorderMargin}
+        onChange={(e) => setFilterBorderMargin(Number(e.target.value))}
+        disabled={extractStatus === 'running'}
+      />
+      <span className="mono">{filterBorderMargin}px</span>
+    </label>
+
+    <label className="rangeField">
+      <span className="muted">Padding</span>
+      <input
+        type="range"
+        min={0}
+        max={30}
+        step={1}
+        value={filterPadding}
+        onChange={(e) => setFilterPadding(Number(e.target.value))}
+        disabled={extractStatus === 'running'}
+      />
+      <span className="mono">{filterPadding}px</span>
+    </label>
+
+    <label className="rangeField">
+      <span className="muted">Max pieces</span>
+      <input
+        type="range"
+        min={10}
+        max={200}
+        step={10}
+        value={filterMaxPieces}
+        onChange={(e) => setFilterMaxPieces(Number(e.target.value))}
+        disabled={extractStatus === 'running'}
+      />
+      <span className="mono">{filterMaxPieces}</span>
+    </label>
+  </div>
+
+  {extractError ? (
+    <p className="cameraError" role="alert" style={{ marginTop: 12 }}>
+      Extraction error: {extractError}
+    </p>
+  ) : null}
+
+  {extractDebug ? (
+    <p className="muted" style={{ marginTop: 10, whiteSpace: 'pre-line' }}>
+      {extractDebug}
+    </p>
+  ) : (
+    <p className="muted" style={{ marginTop: 10 }}>
+      Tip: If pieces are missing, try adjusting &quot;Min area&quot; (segmentation) first, then relax solidity/aspect filters.
+    </p>
+  )}
+
+  {extractedPieces.length ? (
+    <div className="pieceGrid" style={{ marginTop: 12 }}>
+      {extractedPieces.map((p) => (
+        <button
+          key={p.id}
+          type="button"
+          className={`pieceThumb ${selectedPieceId === p.id ? 'selected' : ''}`}
+          onClick={() => setSelectedPieceId(p.id)}
+          title={`#${p.id} · solidity ${p.solidity.toFixed(2)} · aspect ${p.aspectRatio.toFixed(2)}`}
+        >
+          <img className="pieceImg" src={p.previewUrl} alt={`Piece ${p.id}`} />
+          <div className="pieceMeta">
+            <span className="mono">#{p.id}</span>
+            <span className="muted">{Math.round(p.solidity * 100)}%</span>
+          </div>
+        </button>
+      ))}
+    </div>
+  ) : null}
+</div>
+
 </div>
 <p className="muted" style={{ marginTop: 12 }}>
 

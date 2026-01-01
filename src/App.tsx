@@ -1,4 +1,3 @@
-import React from 'react';
 import { HashRouter, NavLink, Route, Routes } from 'react-router-dom';
 import HomePage from './pages/HomePage';
 import HelpPage from './pages/HelpPage';

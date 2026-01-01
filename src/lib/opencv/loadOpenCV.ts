@@ -51,12 +51,43 @@ function ensureGlobalModuleVar() {
   return g.Module;
 }
 
-function getScriptSrc(): string {
-  // Base is '/pwa-puzzle-finder/' for GitHub Pages.
-  const base = (import.meta as any).env?.BASE_URL || '/';
-  const normalizedBase = base.endsWith('/') ? base : base + '/';
-  return normalizedBase + OPENCV_PUBLIC_REL_PATH;
+function getBasePath(): string {
+  // Tests can override this to simulate GitHub Pages base paths.
+  const g = globalThis as any;
+  const override = typeof g.__PUZZLE_FINDER_BASE_URL__ === 'string' ? g.__PUZZLE_FINDER_BASE_URL__ : undefined;
+  const fromBaseTag =
+    typeof document !== 'undefined'
+      ? (document.querySelector('base')?.getAttribute('href') ?? undefined)
+      : undefined;
+
+  const raw = override ?? fromBaseTag;
+
+  if (raw) {
+    try {
+      // Accept both absolute and relative values.
+      const u = new URL(raw, document.baseURI);
+      const p = u.pathname;
+      return p.endsWith('/') ? p : p + '/';
+    } catch {
+      // Fall through
+    }
+  }
+
+  // Derive base from the current document URL.
+  // If index.html is served from /pwa-puzzle-finder/, this resolves to "/pwa-puzzle-finder/".
+  try {
+    const p = new URL('.', document.baseURI).pathname;
+    return p.endsWith('/') ? p : p + '/';
+  } catch {
+    return '/';
+  }
 }
+
+function getScriptSrc(): string {
+  const base = getBasePath();
+  return base + OPENCV_PUBLIC_REL_PATH;
+}
+
 
 function ensureScriptInjected(): HTMLScriptElement {
   const existing = document.querySelector(`script[${OPENCV_SCRIPT_ATTR}="true"]`) as HTMLScriptElement | null;
