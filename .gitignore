@@ -15,7 +15,7 @@ coverage
 vite.config.d.ts
 *.tsbuildinfo
 digest*
-pwa-modeller-*
+pwa-puzzle-*.zip
 
 # Editor directories and files
 .vscode/*

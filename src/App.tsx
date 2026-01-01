@@ -2,6 +2,7 @@ import React from 'react';
 import { HashRouter, NavLink, Route, Routes } from 'react-router-dom';
 import HomePage from './pages/HomePage';
 import HelpPage from './pages/HelpPage';
+import CameraPage from './pages/CameraPage';
 
 function TopNav() {
   const linkStyle: React.CSSProperties = { padding: '8px 10px', borderRadius: 10 };
@@ -15,6 +16,7 @@ function TopNav() {
       </div>
       <nav className="nav">
         <NavLink to="/" end style={({ isActive }) => (isActive ? active : linkStyle)}>Home</NavLink>
+        <NavLink to="/camera" style={({ isActive }) => (isActive ? active : linkStyle)}>Camera</NavLink>
         <NavLink to="/help" style={({ isActive }) => (isActive ? active : linkStyle)}>Help</NavLink>
       </nav>
     </div>
@@ -28,6 +30,7 @@ export default function App() {
         <TopNav />
         <Routes>
           <Route path="/" element={<HomePage />} />
+          <Route path="/camera" element={<CameraPage />} />
           <Route path="/help" element={<HelpPage />} />
           <Route path="*" element={<HomePage />} />
         </Routes>

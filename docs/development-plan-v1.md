@@ -1,5 +1,8 @@
 # Puzzle Finder — Development Plan (v1 MVP, PWA)
 
+> Status: Step 1 and Step 2 are implemented in the repository scaffold.
+
+
 This plan describes how I (as an LLM) would implement **Puzzle Finder** step-by-step as a **PWA** using **video + canvas overlay** and **OpenCV.js/WASM**.  
 Each step is designed to be implementable in one sweep and **testable** before moving on.
 

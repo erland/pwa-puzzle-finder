@@ -8,6 +8,15 @@ export default function HomePage() {
         </p>
       </div>
 
+<div className="card">
+  <h2>Try the camera overlay</h2>
+  <p className="muted">
+    Step 2 is now available: live camera stream with a canvas overlay (no OpenCV yet).
+  </p>
+  <div className="buttonRow">
+    <a href="#/camera">Go to Camera</a>
+  </div>
+</div>
       <div className="card">
         <h2>MVP scope (v1)</h2>
         <ul>

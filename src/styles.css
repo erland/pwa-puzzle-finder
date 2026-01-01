@@ -90,3 +90,46 @@ button {
 }
 button:hover { border-color: #3a3a52; cursor: pointer; }
 button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Camera stage (Step 2) */
+.cameraStage {
+  padding: 14px;
+}
+
+.cameraViewport {
+  position: relative;
+  width: 100%;
+  height: min(70vh, 520px);
+  background: #050508;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.cameraLayer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.cameraOverlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.hidden {
+  display: none;
+}
+
+.cameraError {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 80, 80, 0.10);
+}
