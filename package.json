@@ -16,7 +16,8 @@
   "dependencies": {
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-router-dom": "^6.26.2"
+    "react-router-dom": "^6.26.2",
+    "opencv-js-wasm": "^5.0.0-alpha"
   },
   "devDependencies": {
     "@types/react": "^18.3.5",

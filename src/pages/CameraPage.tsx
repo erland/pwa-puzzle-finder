@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { loadOpenCV, type OpenCvModule } from '../lib/opencv/loadOpenCV';
+import { processHelloOpenCvFrame } from '../lib/opencv/helloFrameProcessor';
 
 type CameraStatus = 'idle' | 'starting' | 'live' | 'captured' | 'error';
 
@@ -145,15 +147,123 @@ export default function CameraPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const stillCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // OpenCV input/output canvases (Step 3).
+  const processingInputCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const processedCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
   const streamRef = useRef<MediaStream | null>(null);
 
-  const [status, setStatus] = useState<CameraStatus>('idle');
-  const [errorMessage, setErrorMessage] = useState<string>('');
-  const [streamInfo, setStreamInfo] = useState<string>('');
+  // OpenCV state (lazy-loaded on user action).
+  const cvRef = useRef<OpenCvModule | null>(null);
+  const processingTimerRef = useRef<number | null>(null);
+  const cannyLowRef = useRef<number>(60);
+  const cannyHighRef = useRef<number>(120);
 
-  const mediaDevices = useMemo(() => getMediaDevices(), []);
+const [status, setStatus] = useState<CameraStatus>('idle');
+const [errorMessage, setErrorMessage] = useState<string>('');
 
-  useOverlayCanvas(overlayCanvasRef, status, streamInfo);
+const [opencvStatus, setOpenCvStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+const [opencvBuildInfoLine, setOpenCvBuildInfoLine] = useState<string>('');
+const [opencvError, setOpenCvError] = useState<string>('');
+const [isProcessing, setIsProcessing] = useState<boolean>(false);
+
+// Hello OpenCV tuning (we will replace these with domain-specific parameters later).
+const [cannyLow, setCannyLow] = useState<number>(60);
+const [cannyHigh, setCannyHigh] = useState<number>(120);
+
+const [streamInfo, setStreamInfo] = useState<string>('');
+
+const mediaDevices = useMemo(() => getMediaDevices(), []);
+
+useEffect(() => {
+  cannyLowRef.current = cannyLow;
+}, [cannyLow]);
+
+useEffect(() => {
+  cannyHighRef.current = cannyHigh;
+}, [cannyHigh]);
+
+useOverlayCanvas(overlayCanvasRef, status, streamInfo);
+
+const stopHelloOpenCvProcessing = () => {
+  if (processingTimerRef.current != null) {
+    window.clearInterval(processingTimerRef.current);
+    processingTimerRef.current = null;
+  }
+  setIsProcessing(false);
+};
+
+// Stop processing whenever we leave the live camera mode, and on unmount.
+useEffect(() => {
+  if (status !== 'live') stopHelloOpenCvProcessing();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [status]);
+
+useEffect(() => {
+  return () => stopHelloOpenCvProcessing();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, []);
+
+const startHelloOpenCvProcessing = async () => {
+  if (isProcessing) return;
+
+  try {
+    setOpenCvError('');
+    if (!cvRef.current) {
+      setOpenCvStatus('loading');
+      const cv = await loadOpenCV();
+      cvRef.current = cv;
+
+      // Keep this lightweight: store just the first line of build info.
+      const firstLine = String(cv.getBuildInformation?.() ?? '')
+        .split('\n')
+        .map((s: string) => s.trim())
+        .filter(Boolean)[0];
+      setOpenCvBuildInfoLine(firstLine ?? 'OpenCV loaded');
+      setOpenCvStatus('ready');
+    }
+
+    const cv = cvRef.current;
+    const video = videoRef.current;
+    const inputCanvas = processingInputCanvasRef.current;
+    const outputCanvas = processedCanvasRef.current;
+
+    if (!cv || !video || !inputCanvas || !outputCanvas) {
+      throw new Error('Missing video/canvas refs for OpenCV processing.');
+    }
+
+    // Run at a modest rate to keep CPU/battery reasonable on mobile.
+    const tick = () => {
+      try {
+        processHelloOpenCvFrame({
+          cv,
+          video,
+          inputCanvas,
+          outputCanvas,
+          options: {
+            cannyLowThreshold: cannyLowRef.current,
+            cannyHighThreshold: cannyHighRef.current,
+            targetWidth: 640
+          }
+        });
+      } catch (err) {
+        // If OpenCV throws, stop processing and surface the error.
+        stopHelloOpenCvProcessing();
+        setOpenCvStatus('error');
+        setOpenCvError(formatError(err));
+      }
+    };
+
+    tick();
+    processingTimerRef.current = window.setInterval(tick, 120);
+    setIsProcessing(true);
+  } catch (err) {
+    stopHelloOpenCvProcessing();
+    setOpenCvStatus('error');
+    setOpenCvError(formatError(err));
+  }
+};
 
   const stopStream = () => {
     const s = streamRef.current;
@@ -272,7 +382,7 @@ export default function CameraPage() {
       <div className="card">
         <h2>Camera</h2>
         <p className="muted">
-          Step 2 implementation: live camera stream with a canvas overlay (no computer vision yet).
+          Step 3 implementation: live camera stream + canvas overlay + OpenCV "Hello" frame processor (edges preview).
         </p>
       </div>
 
@@ -316,9 +426,72 @@ export default function CameraPage() {
           <button onClick={backToLive} disabled={status !== 'captured'}>
             Back to live
           </button>
-        </div>
+</div>
 
-        <p className="muted" style={{ marginTop: 12 }}>
+<div className="opencvPanel" aria-label="OpenCV panel">
+  <div className="row">
+    <strong>OpenCV</strong>
+    <span className="muted" style={{ marginLeft: 10 }}>
+      Status: <strong>{opencvStatus}</strong>
+      {opencvBuildInfoLine ? <> · {opencvBuildInfoLine}</> : null}
+    </span>
+  </div>
+
+  <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
+    <button
+      onClick={isProcessing ? stopHelloOpenCvProcessing : startHelloOpenCvProcessing}
+      disabled={status !== 'live' && !isProcessing}
+    >
+      {isProcessing ? 'Stop OpenCV processing' : 'Start OpenCV processing'}
+    </button>
+
+    <label className="rangeField">
+      <span className="muted">Canny low</span>
+      <input
+        type="range"
+        min={0}
+        max={255}
+        value={cannyLow}
+        disabled={!cvRef.current}
+        onChange={(e) => setCannyLow(Number(e.target.value))}
+      />
+      <span className="mono">{cannyLow}</span>
+    </label>
+
+    <label className="rangeField">
+      <span className="muted">Canny high</span>
+      <input
+        type="range"
+        min={0}
+        max={255}
+        value={cannyHigh}
+        disabled={!cvRef.current}
+        onChange={(e) => setCannyHigh(Number(e.target.value))}
+      />
+      <span className="mono">{cannyHigh}</span>
+    </label>
+  </div>
+
+  <div className="processedViewport" style={{ marginTop: 12 }}>
+    <canvas ref={processedCanvasRef} className="processedCanvas" aria-label="Processed preview" />
+  </div>
+
+  {/* Hidden input canvas used for OpenCV processing (read by cv.imread). */}
+  <canvas ref={processingInputCanvasRef} className="hidden" aria-hidden="true" />
+
+  {opencvError ? (
+    <p className="cameraError" role="alert" style={{ marginTop: 12 }}>
+      OpenCV error: {opencvError}
+    </p>
+  ) : null}
+
+  <p className="muted" style={{ marginTop: 10 }}>
+    Tip: Start camera first, then start OpenCV processing to see a live edge preview.
+  </p>
+</div>
+
+<p className="muted" style={{ marginTop: 12 }}>
+
           Status: <strong>{status}</strong>
           {streamInfo ? <> · {streamInfo}</> : null}
         </p>

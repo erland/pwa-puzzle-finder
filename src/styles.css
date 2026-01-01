@@ -1,4 +1,46 @@
-:root {
+:r
+/* --- OpenCV panel (Step 3) --- */
+.opencvPanel {
+  margin-top: 14px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.opencvPanel .row {
+  display: flex;
+  align-items: center;
+}
+
+.rangeField {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.rangeField input[type='range'] {
+  width: 140px;
+}
+
+.processedViewport {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: #050508;
+  overflow: hidden;
+}
+
+.processedCanvas {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+oot {
   color-scheme: dark;
   --bg: #0b0b0f;
   --panel: #12121a;
@@ -73,6 +115,12 @@ a:hover { text-decoration: underline; }
   margin: 0 0 8px 0;
 }
 .muted { color: var(--muted); }
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 12px;
+  color: var(--muted);
+}
 
 .buttonRow {
   display: flex;

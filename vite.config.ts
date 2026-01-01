@@ -10,6 +10,10 @@ import { VitePWA } from 'vite-plugin-pwa';
  */
 export default defineConfig({
   base: '/pwa-puzzle-finder/',
+  optimizeDeps: {
+    // OpenCV is large; keep it as a separate chunk and avoid pre-bundling.
+    exclude: ['opencv-js-wasm']
+  },
   plugins: [
     react(),
     VitePWA({
@@ -29,6 +33,35 @@ export default defineConfig({
           { src: '/pwa-puzzle-finder/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
           { src: '/pwa-puzzle-finder/icons/icon-512-maskable.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
         ]
+},
+workbox: {
+  // OpenCV bundles are huge. Do NOT precache them (Workbox default limit is 2 MiB).
+  // They will be fetched on-demand and then cached at runtime.
+  globIgnores: ['**/opencv-*.js', '**/*.wasm'],
+  runtimeCaching: [
+    {
+      urlPattern: /\/assets\/opencv-.*\.js$/i,
+      handler: 'CacheFirst',
+      options: {
+        cacheName: 'opencv-js',
+        expiration: {
+          maxEntries: 2,
+          maxAgeSeconds: 60 * 60 * 24 * 30 // 30 days
+        }
+      }
+    },
+    {
+      urlPattern: /\/assets\/.*\.wasm$/i,
+      handler: 'CacheFirst',
+      options: {
+        cacheName: 'opencv-wasm',
+        expiration: {
+          maxEntries: 4,
+          maxAgeSeconds: 60 * 60 * 24 * 30 // 30 days
+        }
+      }
+    }
+  ]
       }
     })
   ]

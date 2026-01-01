@@ -49,7 +49,7 @@ describe('CameraPage', () => {
 
     await waitFor(() => expect(getUserMedia).toHaveBeenCalled());
 
-    expect(screen.getByText(/status:/i).textContent).toMatch(/live|starting|captured|error/i);
+    expect(screen.getByText(/status:/i, { selector: 'p' }).textContent).toMatch(/idle|starting|live|captured|error/i);
   });
 
   it('shows error if getUserMedia fails', async () => {
