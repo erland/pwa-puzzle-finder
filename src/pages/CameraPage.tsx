@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject, type PointerEvent as ReactPointerEvent } from 'react';
 import { loadOpenCV, type OpenCvModule } from '../lib/opencv/loadOpenCV';
 import { processHelloOpenCvFrame } from '../lib/opencv/helloFrameProcessor';
 import { segmentPiecesFromFrame, type PieceCandidate, type SegmentPiecesResult } from '../lib/opencv/segmentPieces';
@@ -6,6 +6,21 @@ import { filterAndExtractPieces, type ExtractedPiece } from '../lib/opencv/extra
 import { classifyEdgeCornerMvp } from '../lib/opencv/classifyPieces';
 
 type CameraStatus = 'idle' | 'starting' | 'live' | 'captured' | 'error';
+
+type OverlayOptions = {
+  showGrid: boolean;
+  showCrosshair: boolean;
+  showStatusChip: boolean;
+  showDebugText: boolean;
+  showContours: boolean;
+  showBBoxes: boolean;
+  showLabels: boolean;
+  labelMode: 'id' | 'id+class';
+  opacity: number; // 0..1
+  lineWidth: number;
+  useClassificationColors: boolean;
+};
+
 
 function getMediaDevices(): MediaDevices | null {
   // Some environments (tests) may not define navigator.mediaDevices.
@@ -30,6 +45,22 @@ function safeGet2DContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D |
   }
 }
 
+function pointInPolygon(x: number, y: number, poly: { x: number; y: number }[]): boolean {
+  // Ray-casting algorithm
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x,
+      yi = poly[i].y;
+    const xj = poly[j].x,
+      yj = poly[j].y;
+
+    const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 0.0000001) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+
 function useOverlayCanvas(
   overlayCanvasRef: RefObject<HTMLCanvasElement>,
   status: CameraStatus,
@@ -37,7 +68,8 @@ function useOverlayCanvas(
   pieces?: PieceCandidate[],
   sourceSize?: { w: number; h: number },
   selectedPieceId?: number | null,
-  classById?: Map<number, 'corner' | 'edge' | 'interior'>
+  classById?: Map<number, 'corner' | 'edge' | 'interior'>,
+  options?: OverlayOptions
 ) {
   const rafRef = useRef<number | null>(null);
 
@@ -47,6 +79,20 @@ function useOverlayCanvas(
 
     const ctx = safeGet2DContext(canvas);
     if (!ctx) return;
+
+    const opts: OverlayOptions = options ?? {
+      showGrid: true,
+      showCrosshair: true,
+      showStatusChip: true,
+      showDebugText: Boolean(debugText),
+      showContours: true,
+      showBBoxes: false,
+      showLabels: true,
+      labelMode: 'id+class',
+      opacity: 0.9,
+      lineWidth: 2,
+      useClassificationColors: true
+    };
 
     const dpr = window.devicePixelRatio || 1;
 
@@ -69,6 +115,9 @@ function useOverlayCanvas(
 
       ctx.clearRect(0, 0, w, h);
 
+      let statusBoxH = 0;
+
+      if (opts.showGrid) {
       // Subtle grid
       ctx.globalAlpha = 0.22;
       ctx.lineWidth = 1;
@@ -86,7 +135,9 @@ function useOverlayCanvas(
         ctx.strokeStyle = '#ffffff';
         ctx.stroke();
       }
+      }
 
+      if (opts.showCrosshair) {
       // Crosshair
       ctx.globalAlpha = 0.55;
       ctx.strokeStyle = '#ffffff';
@@ -101,7 +152,9 @@ function useOverlayCanvas(
       ctx.moveTo(0, cy);
       ctx.lineTo(w, cy);
       ctx.stroke();
+      }
 
+      if (opts.showStatusChip) {
       // Status chip
       ctx.globalAlpha = 0.9;
       ctx.fillStyle = 'rgba(0,0,0,0.45)';
@@ -112,63 +165,96 @@ function useOverlayCanvas(
       const metrics = ctx.measureText(label);
       const boxW = Math.ceil(metrics.width + padX * 2);
       const boxH = 14 + padY * 2;
+      statusBoxH = boxH;
       ctx.fillRect(12, 12, boxW, boxH);
       ctx.fillStyle = '#ffffff';
       ctx.fillText(label, 12 + padX, 12 + padY + 14 - 2);
 
       // Optional debug text
-      if (debugText) {
+      }
+
+      if (opts.showDebugText && debugText) {
         ctx.globalAlpha = 0.85;
         ctx.fillStyle = 'rgba(0,0,0,0.45)';
         ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif';
         const lines = debugText.split('\n');
         const maxW = Math.max(...lines.map((l) => ctx.measureText(l).width));
         const bh = lines.length * 16 + 10;
-        ctx.fillRect(12, 12 + boxH + 10, Math.ceil(maxW) + 16, bh);
+        ctx.fillRect(12, 12 + statusBoxH + 10, Math.ceil(maxW) + 16, bh);
         ctx.fillStyle = '#ffffff';
         lines.forEach((l, i) => {
-          ctx.fillText(l, 20, 12 + boxH + 10 + 18 + i * 16);
+          ctx.fillText(l, 20, 12 + statusBoxH + 10 + 18 + i * 16);
         });
       }
 
-// Draw piece contours (segmentation result), mapped from source frame to viewport coordinates.
-if (pieces && pieces.length > 0 && sourceSize && sourceSize.w > 0 && sourceSize.h > 0) {
+// Draw piece contours, mapped from source frame to viewport coordinates.
+if (opts.showContours && pieces && pieces.length > 0 && sourceSize && sourceSize.w > 0 && sourceSize.h > 0) {
   const scale = Math.min(w / sourceSize.w, h / sourceSize.h);
   const offX = (w - sourceSize.w * scale) / 2;
   const offY = (h - sourceSize.h * scale) / 2;
 
-  ctx.globalAlpha = 0.9;
-  ctx.lineWidth = 2;
-  ctx.strokeStyle = '#00ff66';
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+  ctx.globalAlpha = Math.max(0, Math.min(1, opts.opacity));
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
   ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif';
+
+  const drawLabel = (x: number, y: number, text: string) => {
+    const tw = ctx.measureText(text).width;
+    const px = Math.max(0, Math.min(w - (tw + 12), x));
+    const py = Math.max(0, Math.min(h - 16, y));
+    ctx.fillRect(px, py, tw + 12, 16);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(text, px + 6, py + 12);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+  };
+
   for (const p of pieces) {
     const isSelected = selectedPieceId != null && p.id === selectedPieceId;
-    ctx.lineWidth = isSelected ? 3 : 2;
     const cls = classById?.get(p.id);
-    ctx.strokeStyle = isSelected ? '#ffcc00' : cls === 'corner' ? '#ff5566' : cls === 'edge' ? '#33aaff' : '#00ff66';
-    if (!p.contour || p.contour.length < 2) continue;
 
-    ctx.beginPath();
-    const p0 = p.contour[0];
-    ctx.moveTo(p0.x * scale + offX, p0.y * scale + offY);
-    for (let k = 1; k < p.contour.length; k++) {
-      const pk = p.contour[k];
-      ctx.lineTo(pk.x * scale + offX, pk.y * scale + offY);
+    const baseColor = opts.useClassificationColors
+      ? cls === 'corner'
+        ? '#ff5566'
+        : cls === 'edge'
+          ? '#33aaff'
+          : '#00ff66'
+      : '#00ff66';
+
+    ctx.strokeStyle = isSelected ? '#ffcc00' : baseColor;
+    ctx.lineWidth = isSelected ? Math.max(3, opts.lineWidth + 1) : opts.lineWidth;
+
+    // Contour
+    if (p.contour && p.contour.length > 0) {
+      ctx.beginPath();
+      const p0 = p.contour[0];
+      ctx.moveTo(p0.x * scale + offX, p0.y * scale + offY);
+      for (let k = 1; k < p.contour.length; k++) {
+        const pk = p.contour[k];
+        ctx.lineTo(pk.x * scale + offX, pk.y * scale + offY);
+      }
+      ctx.closePath();
+      ctx.stroke();
     }
-    ctx.closePath();
-    ctx.stroke();
 
-    // Label near bbox top-left
-    const lx = p.bbox.x * scale + offX;
-    const ly = p.bbox.y * scale + offY;
-    const label = `#${p.id}`;
-    const tw = ctx.measureText(label).width;
-    ctx.fillRect(lx, Math.max(0, ly - 16), tw + 10, 16);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(label, lx + 5, Math.max(12, ly - 4));
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+    // BBox
+    if (opts.showBBoxes) {
+      const bx = p.bbox.x * scale + offX;
+      const by = p.bbox.y * scale + offY;
+      const bw = p.bbox.width * scale;
+      const bh = p.bbox.height * scale;
+      ctx.strokeRect(bx, by, bw, bh);
+    }
+
+    // Label (near bbox top-left)
+    if (opts.showLabels) {
+      const lx = p.bbox.x * scale + offX;
+      const ly = p.bbox.y * scale + offY;
+      const clsText = cls ? cls.toUpperCase() : '—';
+      const label = opts.labelMode === 'id' ? `#${p.id}` : `#${p.id}  ${clsText}`;
+      drawLabel(lx, ly - 18, label);
+    }
   }
+
+  ctx.globalAlpha = 1;
 }
 
 
@@ -188,7 +274,7 @@ if (pieces && pieces.length > 0 && sourceSize && sourceSize.w > 0 && sourceSize.
       }
       ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
     };
-  }, [overlayCanvasRef, status, debugText, pieces, sourceSize, selectedPieceId, classById]);
+  }, [overlayCanvasRef, status, debugText, pieces, sourceSize, selectedPieceId, classById, options]);
 }
 
 export default function CameraPage() {
@@ -244,6 +330,22 @@ const [extractedPieces, setExtractedPieces] = useState<ExtractedPiece[]>([]);
   }, [extractedPieces]);
 const [selectedPieceId, setSelectedPieceId] = useState<number | null>(null);
 
+// Overlay settings (Step 7)
+const [overlaySource, setOverlaySource] = useState<'segmented' | 'extracted'>('segmented');
+const [overlayTapToSelect, setOverlayTapToSelect] = useState<boolean>(true);
+const [overlayShowGrid, setOverlayShowGrid] = useState<boolean>(true);
+const [overlayShowCrosshair, setOverlayShowCrosshair] = useState<boolean>(false);
+const [overlayShowStatusChip, setOverlayShowStatusChip] = useState<boolean>(true);
+const [overlayShowDebugText, setOverlayShowDebugText] = useState<boolean>(false);
+const [overlayShowContours, setOverlayShowContours] = useState<boolean>(true);
+const [overlayShowBBoxes, setOverlayShowBBoxes] = useState<boolean>(false);
+const [overlayShowLabels, setOverlayShowLabels] = useState<boolean>(true);
+const [overlayLabelMode, setOverlayLabelMode] = useState<'id' | 'id+class'>('id+class');
+const [overlayOpacity, setOverlayOpacity] = useState<number>(0.9);
+const [overlayLineWidth, setOverlayLineWidth] = useState<number>(2);
+const [overlayUseClassColors, setOverlayUseClassColors] = useState<boolean>(true);
+
+
 const [filterMinSolidity, setFilterMinSolidity] = useState<number>(0.80);
 const [filterMaxAspect, setFilterMaxAspect] = useState<number>(4.0);
 const [filterBorderMargin, setFilterBorderMargin] = useState<number>(6);
@@ -264,7 +366,88 @@ useEffect(() => {
   cannyHighRef.current = cannyHigh;
 }, [cannyHigh]);
 
-useOverlayCanvas(overlayCanvasRef, status, streamInfo, segPieces, sourceSize, selectedPieceId, classById);
+const overlayPieces: PieceCandidate[] = useMemo(() => {
+  if (overlaySource === 'extracted' && extractedPieces.length > 0) {
+    return extractedPieces.map((p) => ({
+      id: p.id,
+      areaPx: p.areaPxProcessed,
+      bbox: p.bboxSource,
+      contour: p.contourSource
+    }));
+  }
+  return segPieces;
+}, [overlaySource, extractedPieces, segPieces]);
+
+const overlayOptions: OverlayOptions = useMemo(
+  () => ({
+    showGrid: overlayShowGrid,
+    showCrosshair: overlayShowCrosshair,
+    showStatusChip: overlayShowStatusChip,
+    showDebugText: overlayShowDebugText,
+    showContours: overlayShowContours,
+    showBBoxes: overlayShowBBoxes,
+    showLabels: overlayShowLabels,
+    labelMode: overlayLabelMode,
+    opacity: overlayOpacity,
+    lineWidth: overlayLineWidth,
+    useClassificationColors: overlayUseClassColors
+  }),
+  [
+    overlayShowGrid,
+    overlayShowCrosshair,
+    overlayShowStatusChip,
+    overlayShowDebugText,
+    overlayShowContours,
+    overlayShowBBoxes,
+    overlayShowLabels,
+    overlayLabelMode,
+    overlayOpacity,
+    overlayLineWidth,
+    overlayUseClassColors
+  ]
+);
+
+useOverlayCanvas(overlayCanvasRef, status, streamInfo, overlayPieces, sourceSize, selectedPieceId, classById, overlayOptions);
+
+const handleOverlayPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+  if (!overlayTapToSelect) return;
+  if (!sourceSize || sourceSize.w <= 0 || sourceSize.h <= 0) return;
+  const canvas = overlayCanvasRef.current;
+  if (!canvas) return;
+
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+
+  const w = rect.width;
+  const h = rect.height;
+  const scale = Math.min(w / sourceSize.w, h / sourceSize.h);
+  const offX = (w - sourceSize.w * scale) / 2;
+  const offY = (h - sourceSize.h * scale) / 2;
+
+  const sx = (x - offX) / scale;
+  const sy = (y - offY) / scale;
+
+  // Find the smallest piece that contains the point.
+  let best: PieceCandidate | null = null;
+  let bestArea = Number.POSITIVE_INFINITY;
+
+  for (const p of overlayPieces) {
+    const b = p.bbox;
+    if (sx < b.x || sy < b.y || sx > b.x + b.width || sy > b.y + b.height) continue;
+    const inPoly = p.contour && p.contour.length >= 3 ? pointInPolygon(sx, sy, p.contour) : true;
+    if (!inPoly) continue;
+
+    const area = b.width * b.height;
+    if (area < bestArea) {
+      best = p;
+      bestArea = area;
+    }
+  }
+
+  setSelectedPieceId(best ? best.id : null);
+};
+
 
 const stopHelloOpenCvProcessing = () => {
   if (processingTimerRef.current != null) {
@@ -678,7 +861,12 @@ const classifyPiecesNow = async () => {
             className={status === 'captured' ? 'cameraLayer' : 'hidden'}
             aria-label="Captured frame"
           />
-          <canvas ref={overlayCanvasRef} className="cameraOverlay" aria-label="Overlay" />
+          <canvas
+            ref={overlayCanvasRef}
+            className="cameraOverlay"
+            aria-label="Overlay"
+            onPointerDown={handleOverlayPointerDown}
+          />
         </div>
 
         {status === 'error' && (
@@ -705,6 +893,153 @@ const classifyPiecesNow = async () => {
             Back to live
           </button>
 </div>
+
+
+        <div className="opencvPanel" aria-label="Overlays panel" style={{ marginTop: 12 }}>
+          <div className="row">
+            <strong>Overlays</strong>
+            <span className="muted" style={{ marginLeft: 10 }}>
+              Source: <strong>{overlaySource}</strong>
+              {selectedPieceId != null ? (
+                <>
+                  {' '}
+                  · Selected: <strong>#{selectedPieceId}</strong>
+                </>
+              ) : null}
+            </span>
+          </div>
+
+          <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
+            <label className="selectField">
+              <span className="muted">Source</span>
+              <select
+                value={overlaySource}
+                onChange={(e) => {
+                  setOverlaySource(e.target.value as 'segmented' | 'extracted');
+                  setSelectedPieceId(null);
+                }}
+              >
+                <option value="segmented">Segmented</option>
+                <option value="extracted">Extracted</option>
+              </select>
+            </label>
+
+            <label className="checkboxField">
+              <input
+                type="checkbox"
+                checked={overlayTapToSelect}
+                onChange={(e) => setOverlayTapToSelect(e.target.checked)}
+              />
+              <span className="muted">Tap to select</span>
+            </label>
+
+            <label className="checkboxField">
+              <input type="checkbox" checked={overlayShowContours} onChange={(e) => setOverlayShowContours(e.target.checked)} />
+              <span className="muted">Contours</span>
+            </label>
+
+            <label className="checkboxField">
+              <input type="checkbox" checked={overlayShowBBoxes} onChange={(e) => setOverlayShowBBoxes(e.target.checked)} />
+              <span className="muted">BBoxes</span>
+            </label>
+
+            <label className="checkboxField">
+              <input type="checkbox" checked={overlayShowLabels} onChange={(e) => setOverlayShowLabels(e.target.checked)} />
+              <span className="muted">Labels</span>
+            </label>
+
+            <label className="selectField">
+              <span className="muted">Label mode</span>
+              <select
+                value={overlayLabelMode}
+                onChange={(e) => setOverlayLabelMode(e.target.value as 'id' | 'id+class')}
+              >
+                <option value="id">ID</option>
+                <option value="id+class">ID + class</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
+            <label className="checkboxField">
+              <input type="checkbox" checked={overlayShowGrid} onChange={(e) => setOverlayShowGrid(e.target.checked)} />
+              <span className="muted">Grid</span>
+            </label>
+
+            <label className="checkboxField">
+              <input
+                type="checkbox"
+                checked={overlayShowCrosshair}
+                onChange={(e) => setOverlayShowCrosshair(e.target.checked)}
+              />
+              <span className="muted">Crosshair</span>
+            </label>
+
+            <label className="checkboxField">
+              <input
+                type="checkbox"
+                checked={overlayShowStatusChip}
+                onChange={(e) => setOverlayShowStatusChip(e.target.checked)}
+              />
+              <span className="muted">Status chip</span>
+            </label>
+
+            <label className="checkboxField">
+              <input
+                type="checkbox"
+                checked={overlayShowDebugText}
+                onChange={(e) => setOverlayShowDebugText(e.target.checked)}
+              />
+              <span className="muted">Debug text</span>
+            </label>
+
+            <label className="checkboxField">
+              <input
+                type="checkbox"
+                checked={overlayUseClassColors}
+                onChange={(e) => setOverlayUseClassColors(e.target.checked)}
+              />
+              <span className="muted">Class colors</span>
+            </label>
+          </div>
+
+          <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
+            <label className="rangeField">
+              <span className="muted">Opacity</span>
+              <input
+                type="range"
+                min={0.2}
+                max={1}
+                step={0.05}
+                value={overlayOpacity}
+                onChange={(e) => setOverlayOpacity(Number(e.target.value))}
+              />
+              <span className="mono">{overlayOpacity.toFixed(2)}</span>
+            </label>
+
+            <label className="rangeField">
+              <span className="muted">Line width</span>
+              <input
+                type="range"
+                min={1}
+                max={6}
+                step={1}
+                value={overlayLineWidth}
+                onChange={(e) => setOverlayLineWidth(Number(e.target.value))}
+              />
+              <span className="mono">{overlayLineWidth}</span>
+            </label>
+
+            <button className="btn" onClick={() => setSelectedPieceId(null)} disabled={selectedPieceId == null}>
+              Clear selection
+            </button>
+          </div>
+
+          <p className="muted" style={{ marginTop: 10 }}>
+            Tip: Tap a piece on the overlay to select it. Use &quot;Segmented&quot; to inspect raw segmentation candidates
+            and &quot;Extracted&quot; to inspect filtered/extracted pieces.
+          </p>
+        </div>
 
 <div className="opencvPanel" aria-label="OpenCV panel">
   <div className="row">
