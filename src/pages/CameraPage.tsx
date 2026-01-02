@@ -291,6 +291,10 @@ export default function CameraPage() {
   // OpenCV state (lazy-loaded on user action).
   const cvRef = useRef<OpenCvModule | null>(null);
   const processingTimerRef = useRef<number | null>(null);
+  // Near-real-time pipeline timer (Step 8)
+  const liveTimerRef = useRef<number | null>(null);
+  const liveInFlightRef = useRef<boolean>(false);
+  const liveTickCountRef = useRef<number>(0);
   const cannyLowRef = useRef<number>(60);
   const cannyHighRef = useRef<number>(120);
 
@@ -344,6 +348,14 @@ const [overlayLabelMode, setOverlayLabelMode] = useState<'id' | 'id+class'>('id+
 const [overlayOpacity, setOverlayOpacity] = useState<number>(0.9);
 const [overlayLineWidth, setOverlayLineWidth] = useState<number>(2);
 const [overlayUseClassColors, setOverlayUseClassColors] = useState<boolean>(true);
+
+// Near-real-time mode (Step 8)
+const [liveModeEnabled, setLiveModeEnabled] = useState<boolean>(false);
+const [livePipeline, setLivePipeline] = useState<'segment' | 'extract' | 'classify'>('segment');
+const [liveFps, setLiveFps] = useState<number>(2);
+const [liveStatus, setLiveStatus] = useState<'idle' | 'running' | 'error'>('idle');
+const [liveInfo, setLiveInfo] = useState<string>('');
+const [liveError, setLiveError] = useState<string>('');
 
 
 const [filterMinSolidity, setFilterMinSolidity] = useState<number>(0.80);
@@ -456,6 +468,175 @@ const stopHelloOpenCvProcessing = () => {
   }
   setIsProcessing(false);
 };
+
+const stopLiveProcessing = () => {
+  if (liveTimerRef.current != null) {
+    window.clearInterval(liveTimerRef.current);
+    liveTimerRef.current = null;
+  }
+  liveInFlightRef.current = false;
+  setLiveStatus('idle');
+  setLiveInfo('');
+  setLiveError('');
+};
+
+const ensureOpenCvReady = async (): Promise<OpenCvModule> => {
+  if (cvRef.current) return cvRef.current;
+
+  setOpenCvError('');
+  setOpenCvStatus('loading');
+  const cv = await loadOpenCV();
+  cvRef.current = cv;
+  setOpenCvStatus('ready');
+
+  const firstLine = String(cv.getBuildInformation?.() ?? '')
+    .split('\n')
+    .map((s: string) => s.trim())
+    .filter(Boolean)[0];
+  if (firstLine) setOpenCvBuildInfoLine(firstLine);
+  return cv;
+};
+
+const runLivePipelineOnce = async () => {
+  const video = videoRef.current;
+  const still = stillCanvasRef.current;
+  const inputCanvas = processingInputCanvasRef.current;
+  const outputCanvas = processedCanvasRef.current;
+
+  if (!inputCanvas || !outputCanvas) throw new Error('Missing OpenCV canvases.');
+  const source = status === 'captured' ? still : video;
+  if (!source) throw new Error('No frame source available.');
+
+  const cv = await ensureOpenCvReady();
+
+  const t0 = performance.now();
+
+  const seg = segmentPiecesFromFrame({
+    cv,
+    source: source as any,
+    inputCanvas,
+    outputCanvas,
+    options: {
+      targetWidth: 640,
+      minAreaRatio,
+      morphKernelSize: morphKernel
+    }
+  });
+
+  setSegPieces(seg.pieces);
+  setSegResult(seg);
+  setSegStatus('done');
+  setSegError('');
+  setSegDebug(
+    [
+      `Segmentation: ${seg.pieces.length} piece(s)`,
+      `Contours: ${seg.debug.contoursFound}`,
+      `Proc: ${seg.debug.processedWidth}×${seg.debug.processedHeight}${seg.debug.inverted ? ' (inverted)' : ''}`
+    ].join('\n')
+  );
+
+  let extracted: ExtractedPiece[] = [];
+
+  if (livePipeline === 'segment') {
+    setExtractedPieces([]);
+    setExtractStatus('idle');
+    setExtractError('');
+    setExtractDebug('');
+    setClassifyDebug('');
+  } else {
+    const { pieces, debug } = filterAndExtractPieces({
+      cv,
+      segmentation: seg,
+      processedFrameCanvas: inputCanvas,
+      options: {
+        borderMarginPx: filterBorderMargin,
+        paddingPx: filterPadding,
+        minSolidity: filterMinSolidity,
+        maxAspectRatio: filterMaxAspect,
+        maxPieces: filterMaxPieces
+      }
+    });
+
+    extracted = pieces;
+
+    setExtractedPieces(pieces);
+    setExtractStatus('done');
+    setExtractError('');
+    setExtractDebug(`Extracted: ${pieces.length}
+${debug}`);
+if (livePipeline === 'classify') {
+      const classified = classifyEdgeCornerMvp({
+        cv,
+        processedFrameCanvas: inputCanvas,
+        pieces
+      });
+      setExtractedPieces(classified.pieces);
+      setClassifyDebug(classified.debug);
+    }
+  }
+
+  const dt = performance.now() - t0;
+  liveTickCountRef.current += 1;
+  setLiveInfo(
+    [
+      `Tick #${liveTickCountRef.current}`,
+      `Pipeline: ${livePipeline}`,
+      `Seg: ${seg.pieces.length}`,
+      livePipeline === 'segment' ? '' : `Extract: ${extracted.length}`,
+      `Time: ${dt.toFixed(0)} ms`
+    ]
+      .filter(Boolean)
+      .join(' · ')
+  );
+};
+
+useEffect(() => {
+  if (!liveModeEnabled) {
+    stopLiveProcessing();
+    return;
+  }
+
+  if (processingTimerRef.current != null) {
+    stopHelloOpenCvProcessing();
+  }
+
+  if (status !== 'live' && status !== 'captured') {
+    return;
+  }
+
+  const intervalMs = Math.max(200, Math.round(1000 / Math.max(0.5, liveFps)));
+  setLiveStatus('running');
+  setLiveError('');
+
+  const tick = async () => {
+    if (liveInFlightRef.current) return;
+    if (!liveModeEnabled) return;
+    if (document.hidden) return;
+    if (status !== 'live' && status !== 'captured') return;
+
+    const v = videoRef.current;
+    if (status === 'live' && (!v || (v.videoWidth || 0) === 0)) return;
+
+    liveInFlightRef.current = true;
+    try {
+      await runLivePipelineOnce();
+    } catch (e) {
+      setLiveStatus('error');
+      setLiveError(formatError(e));
+    } finally {
+      liveInFlightRef.current = false;
+    }
+  };
+
+  tick();
+  liveTimerRef.current = window.setInterval(tick, intervalMs);
+
+  return () => {
+    stopLiveProcessing();
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [liveModeEnabled, liveFps, livePipeline, status, minAreaRatio, morphKernel, filterBorderMargin, filterPadding, filterMinSolidity, filterMaxAspect, filterMaxPieces]);
+
 
 // Stop processing whenever we leave the live camera mode, and on unmount.
 useEffect(() => {
@@ -788,6 +969,7 @@ const classifyPiecesNow = async () => {
 
 
   const stopCamera = () => {
+    stopLiveProcessing();
     stopStream();
     setStreamInfo('');
     setStatus('idle');
@@ -1040,6 +1222,72 @@ const classifyPiecesNow = async () => {
             and &quot;Extracted&quot; to inspect filtered/extracted pieces.
           </p>
         </div>
+
+
+<div className="opencvPanel" aria-label="Near-real-time panel" style={{ marginTop: 12 }}>
+  <div className="row">
+    <strong>Near-real-time</strong>
+    <span className="muted" style={{ marginLeft: 10 }}>
+      Status: <strong>{liveModeEnabled ? liveStatus : 'idle'}</strong>
+    </span>
+  </div>
+
+  <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
+    <label className="checkboxField">
+      <input type="checkbox" checked={liveModeEnabled} onChange={(e) => setLiveModeEnabled(e.target.checked)} />
+      <span className="muted">Enable live processing</span>
+    </label>
+
+    <label className="rangeField" style={{ minWidth: 220 }}>
+      <span className="muted">Rate (fps)</span>
+      <input
+        type="range"
+        min={1}
+        max={10}
+        step={1}
+        value={liveFps}
+        onChange={(e) => setLiveFps(Number(e.target.value))}
+        disabled={!liveModeEnabled}
+      />
+      <span className="mono">{liveFps}</span>
+    </label>
+
+    <label className="rangeField" style={{ minWidth: 260 }}>
+      <span className="muted">Pipeline</span>
+      <select
+        value={livePipeline}
+        onChange={(e) => setLivePipeline(e.target.value as any)}
+        disabled={!liveModeEnabled}
+        className="select"
+      >
+        <option value="segment">Segmentation</option>
+        <option value="extract">Segmentation + extraction</option>
+        <option value="classify">Segmentation + extraction + classify</option>
+      </select>
+      <span className="mono" />
+    </label>
+
+    <button className="btn" onClick={() => setLiveModeEnabled(false)} disabled={!liveModeEnabled}>
+      Stop live mode
+    </button>
+  </div>
+
+  {liveInfo && (
+    <p className="muted" style={{ marginTop: 10 }}>
+      {liveInfo}
+    </p>
+  )}
+
+  {liveError && (
+    <p className="muted" style={{ marginTop: 10 }}>
+      Live error: <strong>{liveError}</strong>
+    </p>
+  )}
+
+  <p className="muted" style={{ marginTop: 10 }}>
+    Tip: start at 1–3 fps for stability. Higher rates may cause battery drain and dropped frames on mobile.
+  </p>
+</div>
 
 <div className="opencvPanel" aria-label="OpenCV panel">
   <div className="row">
