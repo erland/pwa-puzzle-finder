@@ -4,6 +4,7 @@ import { processHelloOpenCvFrame } from '../lib/opencv/helloFrameProcessor';
 import { segmentPiecesFromFrame, type PieceCandidate, type SegmentPiecesResult } from '../lib/opencv/segmentPieces';
 import { filterAndExtractPieces, type ExtractedPiece } from '../lib/opencv/extractPieces';
 import { classifyEdgeCornerMvp } from '../lib/opencv/classifyPieces';
+import { VisionWorkerClient, type VisionPipeline } from '../lib/vision/visionWorkerClient';
 
 type CameraStatus = 'idle' | 'starting' | 'live' | 'captured' | 'error';
 
@@ -20,6 +21,27 @@ type OverlayOptions = {
   lineWidth: number;
   useClassificationColors: boolean;
 };
+
+
+function getAppBasePath(): string {
+  // Runtime base path used for loading assets under a non-root deploy (e.g. GitHub Pages).
+  // Kept free of ESM-only syntax so Jest can parse this file.
+  const baseTag = typeof document !== 'undefined' ? document.querySelector('base') : null;
+  const href = baseTag?.getAttribute('href');
+  if (href && href.length > 0) return href.endsWith('/') ? href : `${href}/`;
+
+  if (typeof window !== 'undefined') {
+    const p = window.location.pathname || '/';
+    // If served from a known subpath, keep it.
+    const m = p.match(/^(.*\/pwa-puzzle-finder\/)/);
+    if (m) return m[1];
+    // Otherwise, use the directory portion of the pathname.
+    if (p.endsWith('/')) return p;
+    return p.replace(/\/[^/]*$/, '/') || '/';
+  }
+
+  return '/';
+}
 
 
 function getMediaDevices(): MediaDevices | null {
@@ -278,6 +300,7 @@ if (opts.showContours && pieces && pieces.length > 0 && sourceSize && sourceSize
 }
 
 export default function CameraPage() {
+  const isTestEnv = (globalThis as any).process?.env?.NODE_ENV === 'test';
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const stillCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -356,6 +379,48 @@ const [liveFps, setLiveFps] = useState<number>(2);
 const [liveStatus, setLiveStatus] = useState<'idle' | 'running' | 'error'>('idle');
 const [liveInfo, setLiveInfo] = useState<string>('');
 const [liveError, setLiveError] = useState<string>('');
+
+  // Worker offload (Step 9)
+  const [useWorker, setUseWorker] = useState<boolean>(() => !isTestEnv);
+  const [workerStatus, setWorkerStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [workerError, setWorkerError] = useState<string>('');
+  const workerClientRef = useRef<VisionWorkerClient | null>(null);
+  const appBasePath = useMemo(() => getAppBasePath(), []);
+
+  useEffect(() => {
+    if (!useWorker) return;
+
+    if (!workerClientRef.current) {
+      workerClientRef.current = new VisionWorkerClient(appBasePath);
+    }
+
+    let cancelled = false;
+    setWorkerStatus('loading');
+    setWorkerError('');
+
+    workerClientRef.current
+      .init()
+      .then((res) => {
+        if (cancelled) return;
+        if (res.ok) {
+          setWorkerStatus('ready');
+        } else {
+          setWorkerStatus('error');
+          setWorkerError(res.error);
+        }
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setWorkerStatus('error');
+        setWorkerError(e instanceof Error ? e.message : String(e));
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [useWorker, appBasePath]);
+
+
 
 
 const [filterMinSolidity, setFilterMinSolidity] = useState<number>(0.80);
@@ -506,6 +571,89 @@ const runLivePipelineOnce = async () => {
   if (!inputCanvas || !outputCanvas) throw new Error('Missing OpenCV canvases.');
   const source = status === 'captured' ? still : video;
   if (!source) throw new Error('No frame source available.');
+
+    // Worker path: run the selected pipeline off the main thread.
+    if (useWorker) {
+      if (!workerClientRef.current) {
+        workerClientRef.current = new VisionWorkerClient(appBasePath);
+      }
+
+      const initRes = workerStatus === 'ready' ? { ok: true } : await workerClientRef.current.init();
+      if (!initRes.ok) throw new Error((initRes as any).error ?? 'Failed to init vision worker.');
+
+      const ctx = safeGet2DContext(inputCanvas);
+      if (!ctx) throw new Error('2D context not available.');
+
+      const sourceW = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
+      const sourceH = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
+      if (!sourceW || !sourceH) throw new Error('Source dimensions not ready.');
+
+      const targetWidth = 640;
+      const scale = sourceW > targetWidth ? targetWidth / sourceW : 1;
+      const pw = Math.max(1, Math.round(sourceW * scale));
+      const ph = Math.max(1, Math.round(sourceH * scale));
+
+      if (inputCanvas.width !== pw) inputCanvas.width = pw;
+      if (inputCanvas.height !== ph) inputCanvas.height = ph;
+
+      ctx.clearRect(0, 0, pw, ph);
+      ctx.drawImage(source as any, 0, 0, pw, ph);
+
+      const img = ctx.getImageData(0, 0, pw, ph);
+
+      const pipeline = livePipeline as VisionPipeline;
+      const res = await workerClientRef.current.process({
+        pipeline,
+        width: pw,
+        height: ph,
+        sourceWidth: sourceW,
+        sourceHeight: sourceH,
+        scaleToSource: sourceW / pw,
+        buffer: img.data.buffer,
+        segOptions: {
+          minAreaRatio,
+          blurKernelSize: 5,
+          morphKernelSize: morphKernel
+        },
+        extractOptions: {
+          borderMarginPx: filterBorderMargin,
+          paddingPx: filterPadding,
+          minSolidity: filterMinSolidity,
+          maxAspectRatio: filterMaxAspect,
+          maxPieces: filterMaxPieces
+        }
+      });
+
+setSegPieces((res.segmentation?.pieces ?? []) as any);
+const seg = res.segmentation as any;
+if (seg?.debug) {
+  setSegDebug(
+    [
+      `Segmentation: ${(seg.pieces?.length ?? 0)} piece(s)`,
+      `Contours: ${seg.debug.contoursFound ?? '?'}`,
+      `Proc: ${seg.debug.processedWidth ?? '?'}×${seg.debug.processedHeight ?? '?'}${seg.debug.inverted ? ' (inverted)' : ''}`
+    ].join('\n')
+  );
+} else {
+  setSegDebug(`Segmentation: ${(seg?.pieces?.length ?? 0)} piece(s)`);
+}
+if (pipeline !== 'segment') {
+        setExtractedPieces((res.extracted?.pieces ?? []) as any);
+        setExtractDebug(res.extracted?.debug ?? '');
+      }
+
+      if (pipeline === 'classify') {
+        setExtractedPieces((res.classified?.pieces ?? []) as any);
+        setClassifyDebug(res.classified?.debug ?? '');
+      }
+
+      // The worker currently does not render the segmentation preview mask; clear the preview canvas.
+      const outCtx = safeGet2DContext(outputCanvas);
+      outCtx?.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
+
+      setLiveInfo(`Worker: ${pipeline} • pieces: ${res.segmentation?.pieces?.length ?? 0}`);
+      return;
+    }
 
   const cv = await ensureOpenCvReady();
 
@@ -1237,6 +1385,15 @@ const classifyPiecesNow = async () => {
       <input type="checkbox" checked={liveModeEnabled} onChange={(e) => setLiveModeEnabled(e.target.checked)} />
       <span className="muted">Enable live processing</span>
     </label>
+
+    <label className="checkboxField">
+      <input type="checkbox" checked={useWorker} onChange={(e) => setUseWorker(e.target.checked)} />
+      <span className="muted">Use worker</span>
+    </label>
+    <span className="muted" style={{ marginLeft: 6 }}>
+      Worker: <strong>{workerStatus}</strong>
+      {workerError ? <span style={{ marginLeft: 8 }}>({workerError})</span> : null}
+    </span>
 
     <label className="rangeField" style={{ minWidth: 220 }}>
       <span className="muted">Rate (fps)</span>
