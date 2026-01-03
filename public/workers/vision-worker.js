@@ -5,32 +5,136 @@
 /* eslint-disable no-restricted-globals */
 let __baseUrl = '/';
 let __cvPromise = null;
+let __cvModule = null;
+let __preloadError = null;
 
 function __sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
 async function ensureOpenCV() {
+  if (__cvModule) return __cvModule;
   if (__cvPromise) return __cvPromise;
+
+  function waitForModuleReady(mod, timeoutMs) {
+    // Emscripten OpenCV may initialize asynchronously; `Mat` becomes available after runtime init.
+    if (mod && mod.Mat) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const finishOk = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(t);
+        resolve();
+      };
+      const finishErr = (err) => {
+        if (done) return;
+        done = true;
+        clearTimeout(t);
+        reject(err);
+      };
+
+      const t = setTimeout(() => {
+        finishErr(new Error('OpenCV runtime init timeout.'));
+      }, timeoutMs);
+
+      try {
+        // If already initialized, resolve quickly.
+        if (mod && mod.Mat) return finishOk();
+
+        // Emscripten calls this when ready.
+        if (mod) {
+          mod.onRuntimeInitialized = () => finishOk();
+          // If OpenCV aborts, surface it.
+          mod.onAbort = (what) => finishErr(new Error('OpenCV abort: ' + what));
+        }
+
+        // Fallback: poll for Mat in case runtime init happened before we set the callback.
+        (async () => {
+          const start = Date.now();
+          while (!done && Date.now() - start < timeoutMs) {
+            if (mod && mod.Mat) return finishOk();
+            await __sleep(50);
+          }
+          if (!done) finishErr(new Error('OpenCV runtime init timeout.'));
+        })();
+      } catch (e) {
+        finishErr(e instanceof Error ? e : new Error(String(e)));
+      }
+    });
+  }
+
   __cvPromise = (async () => {
     try {
-      // Load opencv.js as a plain script (copied into /public/vendor/opencv/opencv.js by prebuild).
+	    // Some OpenCV builds rely on a global `Module` object for configuration.
+	    // Provide locateFile so any additional assets (e.g. wasm) resolve under our base URL.
+	    self.Module = self.Module || {};
+	    if (!self.Module.locateFile) {
+	      self.Module.locateFile = (path) => __baseUrl + 'vendor/opencv/' + path;
+	    }
+
+	    // Load opencv.js as a plain script (copied into /public/vendor/opencv/opencv.js by prebuild).
       importScripts(__baseUrl + 'vendor/opencv/opencv.js');
     } catch (e) {
       throw new Error('Failed to importScripts(OpenCV): ' + (e && e.message ? e.message : String(e)));
     }
 
-    // Poll for global cv readiness.
-    const start = Date.now();
-    while (true) {
-      if (self.cv && self.cv.Mat && typeof self.cv.imread !== 'function') {
-        // Some builds don't expose imread in non-DOM contexts; that's fine.
+    // OpenCV Emscripten bundle typically exposes a factory function as global `cv`.
+    // Calling it returns a Module object that initializes asynchronously.
+    const cvAny = self.cv;
+
+    // Many OpenCV Emscripten builds set `self.cv` to a Promise that resolves to the module.
+    // In that case, await it and then replace the global with the resolved module.
+    if (cvAny && typeof cvAny.then === 'function') {
+      const mod = await cvAny;
+      await waitForModuleReady(mod, 60000);
+      if (!mod || !mod.Mat) {
+        throw new Error('OpenCV runtime initialized, but module API (cv.Mat) was not found.');
       }
-      if (self.cv && self.cv.Mat && self.cv.CV_8U) return self.cv;
-      if (Date.now() - start > 60000) throw new Error('OpenCV load timeout (cv not available).');
+      __cvModule = mod;
+      self.cv = mod;
+      return mod;
+    }
+
+    if (typeof cvAny === 'function' && !cvAny.Mat) {
+      let mod;
+      try {
+	      mod = cvAny({
+	        locateFile: (path) => __baseUrl + 'vendor/opencv/' + path
+	      });
+      } catch (e) {
+        throw new Error('OpenCV factory threw: ' + (e && e.message ? e.message : String(e)));
+      }
+
+      // Some builds return a Promise. Others return a Module object immediately.
+      if (mod && typeof mod.then === 'function') {
+        mod = await mod;
+      }
+
+      // Wait for runtime init so Mat/etc exist.
+      await waitForModuleReady(mod, 60000);
+
+      if (mod && mod.Mat) {
+        __cvModule = mod;
+        self.cv = mod; // normalize: after init, treat global `cv` as module object
+        return __cvModule;
+      }
+      throw new Error('OpenCV factory did not produce a usable module.');
+    }
+
+    // Non-modularized builds: poll for global cv readiness (may still take time).
+    const start = Date.now();
+    while (Date.now() - start < 60000) {
+      const cv = self.cv;
+      if (cv && cv.Mat) {
+        __cvModule = cv;
+        return __cvModule;
+      }
       await __sleep(50);
     }
+    throw new Error('OpenCV load timeout (cv not available).');
   })();
+
   return __cvPromise;
 }
 
@@ -374,17 +478,32 @@ self.onmessage = async (event) => {
 
   try {
     if (type === 'init') {
-      // Determine a robust base URL for loading assets from /public.
-      // Prefer explicit baseUrl from main thread, but fall back to deriving from the worker script URL.
-      const provided = msg.baseUrl;
-      const derived = String(self.location && self.location.href ? self.location.href : '/').replace(/workers\/vision-worker\.js(\?.*)?$/, '');
-      const raw = (provided && String(provided).length > 0) ? String(provided) : derived;
-      const abs = new URL(raw, self.location && self.location.href ? self.location.href : undefined).href;
-      __baseUrl = abs.endsWith('/') ? abs : abs + '/';
-      await ensureOpenCV();
-      self.postMessage({ type: 'inited' });
-      return;
+    // baseUrl is required so the worker can resolve opencv.js regardless of app BASE_URL.
+    const provided = msg && typeof msg.baseUrl === 'string' ? msg.baseUrl : null;
+
+    if (provided) {
+      __baseUrl = provided.endsWith('/') ? provided : provided + '/';
+    } else {
+      // Derive from our own URL: .../workers/vision-worker.js -> .../
+      const href = String(self.location && self.location.href ? self.location.href : '');
+      const idx = href.lastIndexOf('/workers/');
+      if (idx >= 0) __baseUrl = href.slice(0, idx + 1);
+      else __baseUrl = href.replace(/\/workers\/[^/]+$/, '/');
+      if (!__baseUrl.endsWith('/')) __baseUrl += '/';
     }
+
+    // Respond immediately to avoid blocking on large OpenCV download/compile.
+    self.postMessage({ type: 'inited' });
+
+    // Preload OpenCV asynchronously (best effort). This may take time on first load.
+    setTimeout(() => {
+      ensureOpenCV().catch((e) => {
+        __preloadError = String(e && e.message ? e.message : e);
+      });
+    }, 0);
+
+    return;
+  }
 
     if (type === 'process') {
       const requestId = msg.requestId;
