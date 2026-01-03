@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type RefObject, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useMemo, useReducer, useRef, type RefObject, type PointerEvent as ReactPointerEvent } from 'react';
 import { loadOpenCV, type OpenCvModule } from '../lib/opencv/loadOpenCV';
 import { processHelloOpenCvFrame } from '../lib/opencv/helloFrameProcessor';
 import { segmentPiecesFromFrame, type PieceCandidate, type SegmentPiecesResult } from '../lib/opencv/segmentPieces';
@@ -13,6 +13,11 @@ import { drawOverlay } from '../lib/overlay/drawOverlay';
 import { useCameraStream } from '../hooks/useCameraStream';
 import { useVisionTick } from '../hooks/useVisionTick';
 import { CameraControlsCard, CameraIntroCard, CameraViewport } from '../components/camera';
+import {
+  cameraPageReducer,
+  createInitialCameraPageState,
+  type CameraPageState
+} from './cameraPageReducer';
 
 function getAppBasePath(): string {
   // Runtime base path used for loading assets under a non-root deploy (e.g. GitHub Pages).
@@ -142,6 +147,12 @@ export default function CameraPage() {
   const stillCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
+  const [state, dispatch] = useReducer(cameraPageReducer, undefined, () => createInitialCameraPageState(isTestEnv));
+
+  const setStateKey = <K extends keyof CameraPageState>(key: K, value: CameraPageState[K]) => {
+    dispatch({ type: 'set', key, value } as any);
+  };
+
   const camera = useCameraStream();
   const videoRef = camera.videoRef;
   const status = camera.status;
@@ -165,35 +176,113 @@ export default function CameraPage() {
   // OpenCV state (lazy-loaded on user action).
   const cvRef = useRef<OpenCvModule | null>(null);
   const processingTimerRef = useRef<number | null>(null);
-  const cannyLowRef = useRef<number>(60);
-  const cannyHighRef = useRef<number>(120);
+  const cannyLowRef = useRef<number>(state.cannyLow);
+  const cannyHighRef = useRef<number>(state.cannyHigh);
 
+  const {
+    opencvStatus,
+    opencvBuildInfoLine,
+    opencvError,
+    isProcessing,
+    cannyLow,
+    cannyHigh,
+    minAreaRatio,
+    morphKernel,
+    segStatus,
+    segError,
+    segPieces,
+    segDebug,
+    segResult,
+    frameQuality,
+    extractStatus,
+    extractError,
+    extractDebug,
+    classifyDebug,
+    extractedPieces,
+    selectedPieceId,
+    overlaySource,
+    overlayTapToSelect,
+    overlayShowGrid,
+    overlayShowCrosshair,
+    overlayShowStatusChip,
+    overlayShowDebugText,
+    overlayShowContours,
+    overlayShowBBoxes,
+    overlayShowLabels,
+    overlayLabelMode,
+    overlayOpacity,
+    overlayLineWidth,
+    overlayUseClassColors,
+    liveModeEnabled,
+    livePipeline,
+    liveFps,
+    liveStatus,
+    liveInfo,
+    liveError,
+    useWorker,
+    workerStatus,
+    workerError,
+    filterMinSolidity,
+    filterMaxAspect,
+    filterBorderMargin,
+    filterPadding,
+    filterMaxPieces
+  } = state;
 
-const [opencvStatus, setOpenCvStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-const [opencvBuildInfoLine, setOpenCvBuildInfoLine] = useState<string>('');
-const [opencvError, setOpenCvError] = useState<string>('');
-const [isProcessing, setIsProcessing] = useState<boolean>(false);
+  const setOpenCvStatus = (v: CameraPageState['opencvStatus']) => setStateKey('opencvStatus', v);
+  const setOpenCvBuildInfoLine = (v: string) => setStateKey('opencvBuildInfoLine', v);
+  const setOpenCvError = (v: string) => setStateKey('opencvError', v);
+  const setIsProcessing = (v: boolean) => setStateKey('isProcessing', v);
+  const setCannyLow = (v: number) => setStateKey('cannyLow', v);
+  const setCannyHigh = (v: number) => setStateKey('cannyHigh', v);
 
-// Hello OpenCV tuning (we will replace these with domain-specific parameters later).
-const [cannyLow, setCannyLow] = useState<number>(60);
-const [cannyHigh, setCannyHigh] = useState<number>(120);
+  const setMinAreaRatio = (v: number) => setStateKey('minAreaRatio', v);
+  const setMorphKernel = (v: number) => setStateKey('morphKernel', v);
+  const setSegStatus = (v: CameraPageState['segStatus']) => setStateKey('segStatus', v);
+  const setSegError = (v: string) => setStateKey('segError', v);
+  const setSegPieces = (v: PieceCandidate[]) => setStateKey('segPieces', v);
+  const setSegDebug = (v: string) => setStateKey('segDebug', v);
+  const setSegResult = (v: SegmentPiecesResult | null) => setStateKey('segResult', v);
+  const setFrameQuality = (v: FrameQuality | null) => setStateKey('frameQuality', v);
 
-  // Segmentation tuning (piece vs background)
-  const [minAreaRatio, setMinAreaRatio] = useState<number>(0.0015);
-  const [morphKernel, setMorphKernel] = useState<number>(5);
-  const [segStatus, setSegStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
-  const [segError, setSegError] = useState<string>('');
-  const [segPieces, setSegPieces] = useState<PieceCandidate[]>([]);
-  const [segDebug, setSegDebug] = useState<string>('');
-const [segResult, setSegResult] = useState<SegmentPiecesResult | null>(null);
-  const [frameQuality, setFrameQuality] = useState<FrameQuality | null>(null);
+  const setExtractStatus = (v: CameraPageState['extractStatus']) => setStateKey('extractStatus', v);
+  const setExtractError = (v: string) => setStateKey('extractError', v);
+  const setExtractDebug = (v: string) => setStateKey('extractDebug', v);
+  const setClassifyDebug = (v: string) => setStateKey('classifyDebug', v);
+  const setExtractedPieces = (v: ExtractedPiece[]) => setStateKey('extractedPieces', v);
+  const setSelectedPieceId = (v: number | null) => setStateKey('selectedPieceId', v);
 
-// Step 5: filtering + per-piece extraction (transparent previews)
-const [extractStatus, setExtractStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
-const [extractError, setExtractError] = useState<string>('');
-const [extractDebug, setExtractDebug] = useState<string>('');
-  const [classifyDebug, setClassifyDebug] = useState<string>('');
-const [extractedPieces, setExtractedPieces] = useState<ExtractedPiece[]>([]);
+  const setOverlaySource = (v: CameraPageState['overlaySource']) => setStateKey('overlaySource', v);
+  const setOverlayTapToSelect = (v: boolean) => setStateKey('overlayTapToSelect', v);
+  const setOverlayShowGrid = (v: boolean) => setStateKey('overlayShowGrid', v);
+  const setOverlayShowCrosshair = (v: boolean) => setStateKey('overlayShowCrosshair', v);
+  const setOverlayShowStatusChip = (v: boolean) => setStateKey('overlayShowStatusChip', v);
+  const setOverlayShowDebugText = (v: boolean) => setStateKey('overlayShowDebugText', v);
+  const setOverlayShowContours = (v: boolean) => setStateKey('overlayShowContours', v);
+  const setOverlayShowBBoxes = (v: boolean) => setStateKey('overlayShowBBoxes', v);
+  const setOverlayShowLabels = (v: boolean) => setStateKey('overlayShowLabels', v);
+  const setOverlayLabelMode = (v: CameraPageState['overlayLabelMode']) => setStateKey('overlayLabelMode', v);
+  const setOverlayOpacity = (v: number) => setStateKey('overlayOpacity', v);
+  const setOverlayLineWidth = (v: number) => setStateKey('overlayLineWidth', v);
+  const setOverlayUseClassColors = (v: boolean) => setStateKey('overlayUseClassColors', v);
+
+  const setLiveModeEnabled = (v: boolean) => setStateKey('liveModeEnabled', v);
+  const setLivePipeline = (v: CameraPageState['livePipeline']) => setStateKey('livePipeline', v);
+  const setLiveFps = (v: number) => setStateKey('liveFps', v);
+  const setLiveStatus = (v: CameraPageState['liveStatus']) => setStateKey('liveStatus', v);
+  const setLiveInfo = (v: string) => setStateKey('liveInfo', v);
+  const setLiveError = (v: string) => setStateKey('liveError', v);
+
+  const setUseWorker = (v: boolean) => setStateKey('useWorker', v);
+  const setWorkerStatus = (v: CameraPageState['workerStatus']) => setStateKey('workerStatus', v);
+  const setWorkerError = (v: string) => setStateKey('workerError', v);
+
+  const setFilterMinSolidity = (v: number) => setStateKey('filterMinSolidity', v);
+  const setFilterMaxAspect = (v: number) => setStateKey('filterMaxAspect', v);
+  const setFilterBorderMargin = (v: number) => setStateKey('filterBorderMargin', v);
+  const setFilterPadding = (v: number) => setStateKey('filterPadding', v);
+  const setFilterMaxPieces = (v: number) => setStateKey('filterMaxPieces', v);
+
   const classById = useMemo(() => {
     const m = new Map<number, 'corner' | 'edge' | 'interior'>();
     for (const p of extractedPieces) {
@@ -201,35 +290,6 @@ const [extractedPieces, setExtractedPieces] = useState<ExtractedPiece[]>([]);
     }
     return m;
   }, [extractedPieces]);
-const [selectedPieceId, setSelectedPieceId] = useState<number | null>(null);
-
-// Overlay settings (Step 7)
-const [overlaySource, setOverlaySource] = useState<'segmented' | 'extracted'>('segmented');
-const [overlayTapToSelect, setOverlayTapToSelect] = useState<boolean>(true);
-const [overlayShowGrid, setOverlayShowGrid] = useState<boolean>(true);
-const [overlayShowCrosshair, setOverlayShowCrosshair] = useState<boolean>(false);
-const [overlayShowStatusChip, setOverlayShowStatusChip] = useState<boolean>(true);
-const [overlayShowDebugText, setOverlayShowDebugText] = useState<boolean>(false);
-const [overlayShowContours, setOverlayShowContours] = useState<boolean>(true);
-const [overlayShowBBoxes, setOverlayShowBBoxes] = useState<boolean>(false);
-const [overlayShowLabels, setOverlayShowLabels] = useState<boolean>(true);
-const [overlayLabelMode, setOverlayLabelMode] = useState<'id' | 'id+class'>('id+class');
-const [overlayOpacity, setOverlayOpacity] = useState<number>(0.9);
-const [overlayLineWidth, setOverlayLineWidth] = useState<number>(2);
-const [overlayUseClassColors, setOverlayUseClassColors] = useState<boolean>(true);
-
-// Near-real-time mode (Step 8)
-const [liveModeEnabled, setLiveModeEnabled] = useState<boolean>(false);
-const [livePipeline, setLivePipeline] = useState<'segment' | 'extract' | 'classify'>('segment');
-const [liveFps, setLiveFps] = useState<number>(2);
-const [liveStatus, setLiveStatus] = useState<'idle' | 'running' | 'error'>('idle');
-const [liveInfo, setLiveInfo] = useState<string>('');
-const [liveError, setLiveError] = useState<string>('');
-
-  // Worker offload (Step 9)
-  const [useWorker, setUseWorker] = useState<boolean>(() => !isTestEnv);
-  const [workerStatus, setWorkerStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-  const [workerError, setWorkerError] = useState<string>('');
   const workerClientRef = useRef<VisionWorkerClient | null>(null);
   const appBasePath = useMemo(() => getAppBasePath(), []);
 
@@ -265,16 +325,6 @@ const [liveError, setLiveError] = useState<string>('');
       cancelled = true;
     };
   }, [useWorker, appBasePath]);
-
-
-
-
-const [filterMinSolidity, setFilterMinSolidity] = useState<number>(0.80);
-const [filterMaxAspect, setFilterMaxAspect] = useState<number>(4.0);
-const [filterBorderMargin, setFilterBorderMargin] = useState<number>(6);
-const [filterPadding, setFilterPadding] = useState<number>(6);
-const [filterMaxPieces, setFilterMaxPieces] = useState<number>(80);
-
 
 
 useEffect(() => {

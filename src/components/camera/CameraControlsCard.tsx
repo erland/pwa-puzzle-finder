@@ -1,4 +1,4 @@
-import type { RefObject, Dispatch, SetStateAction } from 'react';
+import type { RefObject } from 'react';
 import type { CameraStatus } from '../../types/overlay';
 import type { FrameQuality, FrameQualityGuidanceItem, FrameQualityStatus } from '../../lib/vision/quality';
 import type { ExtractedPiece } from '../../lib/opencv/extractPieces';
@@ -106,7 +106,7 @@ export type CameraControlsCardProps = {
   extractedPieces: ExtractedPiece[];
   setExtractedPieces: (v: ExtractedPiece[]) => void;
 
-  setExtractStatus: Dispatch<SetStateAction<'idle' | 'running' | 'done' | 'error'>>;
+  setExtractStatus: (v: 'idle' | 'running' | 'done' | 'error') => void;
   setExtractError: (v: string) => void;
   setExtractDebug: (v: string) => void;
   setClassifyDebug: (v: string) => void;
