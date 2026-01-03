@@ -10,6 +10,7 @@ import { pointInPolygon } from '../lib/overlay/geometry';
 import { computeFitTransform, mapViewportToSourcePoint } from '../lib/overlay/coordinates';
 import type { CameraStatus, OverlayOptions } from '../types/overlay';
 import { drawOverlay } from '../lib/overlay/drawOverlay';
+import { useCameraStream } from '../hooks/useCameraStream';
 
 function getAppBasePath(): string {
   // Runtime base path used for loading assets under a non-root deploy (e.g. GitHub Pages).
@@ -32,11 +33,6 @@ function getAppBasePath(): string {
 }
 
 
-function getMediaDevices(): MediaDevices | null {
-  // Some environments (tests) may not define navigator.mediaDevices.
-  const md = (navigator as unknown as { mediaDevices?: MediaDevices }).mediaDevices;
-  return md ?? null;
-}
 
 function formatError(err: unknown): string {
   if (!err) return 'Unknown error';
@@ -141,15 +137,28 @@ function useOverlayCanvas(
 
 export default function CameraPage() {
   const isTestEnv = (globalThis as any).process?.env?.NODE_ENV === 'test';
-  const videoRef = useRef<HTMLVideoElement | null>(null);
   const stillCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const camera = useCameraStream();
+  const videoRef = camera.videoRef;
+  const status = camera.status;
+  const errorMessage = camera.errorMessage;
+  const streamInfo = camera.streamInfo;
+  const sourceSize = camera.sourceSize;
+  const startCamera = async () => {
+    // Clear any old captured frame before starting the stream (matches previous behavior).
+    const still = stillCanvasRef.current;
+    if (still) {
+      const ctx = safeGet2DContext(still);
+      if (ctx) ctx.clearRect(0, 0, still.width, still.height);
+    }
+    await camera.startCamera();
+  };
 
   // OpenCV input/output canvases (Step 3).
   const processingInputCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const processedCanvasRef = useRef<HTMLCanvasElement | null>(null);
-
-  const streamRef = useRef<MediaStream | null>(null);
 
   // OpenCV state (lazy-loaded on user action).
   const cvRef = useRef<OpenCvModule | null>(null);
@@ -161,8 +170,6 @@ export default function CameraPage() {
   const cannyLowRef = useRef<number>(60);
   const cannyHighRef = useRef<number>(120);
 
-const [status, setStatus] = useState<CameraStatus>('idle');
-const [errorMessage, setErrorMessage] = useState<string>('');
 
 const [opencvStatus, setOpenCvStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
 const [opencvBuildInfoLine, setOpenCvBuildInfoLine] = useState<string>('');
@@ -271,10 +278,6 @@ const [filterPadding, setFilterPadding] = useState<number>(6);
 const [filterMaxPieces, setFilterMaxPieces] = useState<number>(80);
 
 
-const [streamInfo, setStreamInfo] = useState<string>('');
-  const [sourceSize, setSourceSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
-
-const mediaDevices = useMemo(() => getMediaDevices(), []);
 
 useEffect(() => {
   cannyLowRef.current = cannyLow;
@@ -698,16 +701,6 @@ const startHelloOpenCvProcessing = async () => {
   }
 };
 
-  const stopStream = () => {
-    const s = streamRef.current;
-    if (s) {
-      for (const t of s.getTracks()) t.stop();
-    }
-    streamRef.current = null;
-    const v = videoRef.current as any;
-    if (v) v.srcObject = null;
-  };
-
   
 
 const segmentPiecesNow = async (): Promise<SegmentPiecesResult | null> => {
@@ -858,63 +851,6 @@ const clearSegmentation = () => {
   setExtractError('');
   setExtractDebug('');
 };
-const startCamera = async () => {
-    setErrorMessage('');
-    if (!mediaDevices?.getUserMedia) {
-      setStatus('error');
-      setErrorMessage('Camera access is not supported in this environment.');
-      return;
-    }
-
-    setStatus('starting');
-    try {
-      const stream = await mediaDevices.getUserMedia({
-        video: {
-          facingMode: { ideal: 'environment' },
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        },
-        audio: false
-      });
-
-      streamRef.current = stream;
-
-      const v = videoRef.current as any;
-      if (!v) {
-        stopStream();
-        setStatus('error');
-        setErrorMessage('Video element not available.');
-        return;
-      }
-
-      v.srcObject = stream;
-      // iOS Safari requires these flags for inline playback.
-      v.playsInline = true;
-      v.muted = true;
-
-      await v.play();
-
-      const track = stream.getVideoTracks()[0];
-      const settings = track?.getSettings?.();
-      const w = settings?.width ?? v.videoWidth;
-      const h = settings?.height ?? v.videoHeight;
-      setStreamInfo(`Stream: ${w}×${h}`);
-      setSourceSize({ w: Number(w) || v.videoWidth || 0, h: Number(h) || v.videoHeight || 0 });
-
-      // Clear any old captured frame
-      const still = stillCanvasRef.current;
-      if (still) {
-        const ctx = safeGet2DContext(still);
-        if (ctx) ctx.clearRect(0, 0, still.width, still.height);
-      }
-
-      setStatus('live');
-    } catch (err) {
-      stopStream();
-      setStatus('error');
-      setErrorMessage(formatError(err));
-    }
-  };
 const classifyPiecesNow = async () => {
   try {
     setSegError('');
@@ -959,47 +895,11 @@ const classifyPiecesNow = async () => {
 
   const stopCamera = () => {
     stopLiveProcessing();
-    stopStream();
-    setStreamInfo('');
-    setStatus('idle');
+    camera.stopCamera();
     setSegPieces([]);
     setSegStatus('idle');
     setSegError('');
     setSegDebug('');
-  };
-
-  const captureFrame = () => {
-    const v = videoRef.current;
-    const still = stillCanvasRef.current;
-    if (!v || !still) return;
-
-    const vw = v.videoWidth || 0;
-    const vh = v.videoHeight || 0;
-    if (vw === 0 || vh === 0) return;
-
-    setSourceSize({ w: vw, h: vh });
-
-    still.width = vw;
-    still.height = vh;
-
-    const ctx = safeGet2DContext(still);
-    if (!ctx) return;
-
-    ctx.drawImage(v, 0, 0, vw, vh);
-    v.pause();
-    setStatus('captured');
-  };
-
-  const backToLive = async () => {
-    const v = videoRef.current as any;
-    if (!v) return;
-    try {
-      await v.play();
-      setStatus('live');
-    } catch (err) {
-      setStatus('error');
-      setErrorMessage(formatError(err));
-    }
   };
 
   const qualityStatus = useMemo(() => frameQualityToStatus(frameQuality), [frameQuality]);
@@ -1007,13 +907,6 @@ const classifyPiecesNow = async () => {
     () => guidanceFromFrameQuality(frameQuality, { piecesFound: segPieces.length, maxPieces: filterMaxPieces }),
     [frameQuality, segPieces.length, filterMaxPieces]
   );
-
-  useEffect(() => {
-    return () => {
-      stopStream();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   return (
     <>
@@ -1063,10 +956,10 @@ const classifyPiecesNow = async () => {
           <button className="btn btnDanger" onClick={stopCamera} disabled={status === 'idle'}>
             Stop camera
           </button>
-          <button className="btn" onClick={captureFrame} disabled={status !== 'live'}>
+          <button className="btn" onClick={() => camera.captureFrame(stillCanvasRef.current)} disabled={status !== 'live'}>
             Capture frame
           </button>
-          <button className="btn" onClick={backToLive} disabled={status !== 'captured'}>
+          <button className="btn" onClick={() => void camera.backToLive()} disabled={status !== 'captured'}>
             Back to live
           </button>
 </div>
