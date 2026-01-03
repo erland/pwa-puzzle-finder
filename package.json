@@ -1,7 +1,7 @@
 {
   "name": "pwa-puzzle-finder",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -14,7 +14,9 @@
     "test:watch": "jest --watch",
     "test:ci": "jest --ci",
     "postinstall": "node scripts/copy-opencv.mjs",
-    "prebuild": "node scripts/copy-opencv.mjs"
+    "prebuild": "node scripts/copy-opencv.mjs",
+    "clean": "rm -rf dist",
+    "release:check": "npm test && npm run build"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -42,5 +44,6 @@
     "@testing-library/react": "^16.1.0",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/user-event": "^14.5.2"
-  }
+  },
+  "homepage": "https://<your-gh-pages>/pwa-puzzle-finder/"
 }

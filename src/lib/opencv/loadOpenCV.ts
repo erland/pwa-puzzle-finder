@@ -85,6 +85,14 @@ function getBasePath(): string {
 
 function getScriptSrc(): string {
   const base = getBasePath();
+
+  // Ensure any sidecar files (e.g. wasm/data) are resolved relative to our base path.
+  // Emscripten will call Module.locateFile for these.
+  const moduleCfg: Record<string, unknown> = {
+    locateFile: (path: string) => `${base}vendor/opencv/${path}`
+  };
+  (window as any).Module = { ...(window as any).Module, ...moduleCfg };
+
   return base + OPENCV_PUBLIC_REL_PATH;
 }
 

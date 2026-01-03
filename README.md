@@ -1,59 +1,51 @@
 # Puzzle Finder (PWA)
 
-Puzzle Finder helps you locate **corner** and **edge** jigsaw puzzle pieces using your device camera and on-screen highlighting.
+A Progressive Web App that uses your camera + OpenCV.js to segment and extract jigsaw puzzle pieces, classify them (MVP rule-based), and render helpful overlays. Designed to run on GitHub Pages under `/pwa-puzzle-finder/`.
 
-This repo currently contains:
+## What it does (current MVP)
 
-- **Step 1:** PWA scaffold + baseline UI.
-- **Step 2:** Camera stream + canvas overlay.
-- **Step 3:** OpenCV "Hello" frame processor (live edge preview).
+- Live camera preview with an overlay canvas
+- “Hello OpenCV” frame processor (edge preview)
+- Piece segmentation (foreground vs background) + contour filtering
+- Per-piece extraction (cropped previews + metadata)
+- Edge/corner classification (rule-based MVP)
+- Near-real-time mode (throttled processing loop)
+- Optional Worker pipeline for heavy vision work
+- Quality guidance + clear error states (lighting/motion/contrast hints)
 
-Next steps will add puzzle piece segmentation and corner/edge classification.
-
-## Development
-
-```bash
-pnpm install
-pnpm dev
-```
-
-(You can use npm/yarn if you prefer.)
-
-## Build
+## Run locally
 
 ```bash
-pnpm build
-pnpm preview
+npm install
+npm run dev
 ```
 
-## GitHub Pages base path
+Then open the app at:
 
-This project is preconfigured to be served from:
+- `http://localhost:5173/pwa-puzzle-finder/`
 
-- `/pwa-puzzle-finder/`
-
-Make sure the repository name stays `pwa-puzzle-finder` (or update `vite.config.ts` accordingly).
-
-## What’s implemented so far
-
-- PWA manifest + service worker (auto-updating).
-- Home + Help screens with MVP scope and usage guidance.
-- Hash-based routing (works on GitHub Pages without extra 404 handling).
-
-
-## Testing
+Preview the production build:
 
 ```bash
-npm test
+npm run build
+npm run preview
 ```
 
-Other useful commands:
+- `http://localhost:4173/pwa-puzzle-finder/`
 
-```bash
-npm run test:watch
-npm run test:coverage
-```
+## Notes on OpenCV
 
-Tests live in `__tests__` folders next to the code they test.
+- OpenCV is loaded from `public/vendor/opencv/opencv.js` (copied automatically by `scripts/copy-opencv.mjs` on `prebuild` / `postinstall`).
+- OpenCV assets are **not precached** by the service worker (too large). They are fetched on-demand and runtime-cached.
 
-See `docs/testing-strategy.md` and `docs/manual-test-checklist.md` for practical guidance (automated + manual).
+## Troubleshooting
+
+- **Camera permissions**: make sure your browser allows camera access for the localhost origin.
+- **Wrong paths**: this project is configured for the base path `/pwa-puzzle-finder/`. If you change the repository name or hosting path, update:
+  - `vite.config.ts` (`BASE`)
+  - `public/manifest.webmanifest` (start_url / scope / icon paths)
+- **Service worker odd behavior while developing**: the app disables SW in dev mode to avoid install loops. If you previously installed the PWA, you may need to unregister the SW in DevTools → Application.
+
+## Release checklist
+
+See `docs/release-checklist.md`.
