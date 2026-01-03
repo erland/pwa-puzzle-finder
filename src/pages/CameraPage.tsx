@@ -4,13 +4,14 @@ import { processHelloOpenCvFrame } from '../lib/opencv/helloFrameProcessor';
 import { segmentPiecesFromFrame, type PieceCandidate, type SegmentPiecesResult } from '../lib/opencv/segmentPieces';
 import { filterAndExtractPieces, type ExtractedPiece } from '../lib/opencv/extractPieces';
 import { classifyEdgeCornerMvp } from '../lib/opencv/classifyPieces';
-import { VisionWorkerClient, type VisionPipeline } from '../lib/vision/visionWorkerClient';
+import { VisionWorkerClient } from '../lib/vision/visionWorkerClient';
 import { frameQualityToStatus, guidanceFromFrameQuality, type FrameQuality } from '../lib/vision/quality';
 import { pointInPolygon } from '../lib/overlay/geometry';
 import { computeFitTransform, mapViewportToSourcePoint } from '../lib/overlay/coordinates';
 import type { CameraStatus, OverlayOptions } from '../types/overlay';
 import { drawOverlay } from '../lib/overlay/drawOverlay';
 import { useCameraStream } from '../hooks/useCameraStream';
+import { useVisionTick } from '../hooks/useVisionTick';
 
 function getAppBasePath(): string {
   // Runtime base path used for loading assets under a non-root deploy (e.g. GitHub Pages).
@@ -163,10 +164,6 @@ export default function CameraPage() {
   // OpenCV state (lazy-loaded on user action).
   const cvRef = useRef<OpenCvModule | null>(null);
   const processingTimerRef = useRef<number | null>(null);
-  // Near-real-time pipeline timer (Step 8)
-  const liveTimerRef = useRef<number | null>(null);
-  const liveInFlightRef = useRef<boolean>(false);
-  const liveTickCountRef = useRef<number>(0);
   const cannyLowRef = useRef<number>(60);
   const cannyHighRef = useRef<number>(120);
 
@@ -375,16 +372,6 @@ const stopHelloOpenCvProcessing = () => {
   setIsProcessing(false);
 };
 
-const stopLiveProcessing = () => {
-  if (liveTimerRef.current != null) {
-    window.clearInterval(liveTimerRef.current);
-    liveTimerRef.current = null;
-  }
-  liveInFlightRef.current = false;
-  setLiveStatus('idle');
-  setLiveInfo('');
-  setLiveError('');
-};
 
 const ensureOpenCvReady = async (): Promise<OpenCvModule> => {
   if (cvRef.current) return cvRef.current;
@@ -403,231 +390,55 @@ const ensureOpenCvReady = async (): Promise<OpenCvModule> => {
   return cv;
 };
 
-const runLivePipelineOnce = async () => {
-  const video = videoRef.current;
-  const still = stillCanvasRef.current;
-  const inputCanvas = processingInputCanvasRef.current;
-  const outputCanvas = processedCanvasRef.current;
 
-  if (!inputCanvas || !outputCanvas) throw new Error('Missing OpenCV canvases.');
-  const source = status === 'captured' ? still : video;
-  if (!source) throw new Error('No frame source available.');
+useVisionTick({
+  enabled: liveModeEnabled,
+  liveFps,
+  livePipeline,
+  cameraStatus: status,
 
-    // Worker path: run the selected pipeline off the main thread.
-    if (useWorker) {
-      if (!workerClientRef.current) {
-        workerClientRef.current = new VisionWorkerClient(appBasePath);
-      }
+  videoRef,
+  stillCanvasRef,
+  processingInputCanvasRef,
+  processedCanvasRef,
 
-      const initRes = workerStatus === 'ready' ? { ok: true } : await workerClientRef.current.init();
-      if (!initRes.ok) throw new Error((initRes as any).error ?? 'Failed to init vision worker.');
+  processingTimerRef,
+  stopHelloOpenCvProcessing,
 
-      const ctx = safeGet2DContext(inputCanvas);
-      if (!ctx) throw new Error('2D context not available.');
+  useWorker,
+  appBasePath,
+  workerClientRef,
+  workerStatus,
 
-      const sourceW = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
-      const sourceH = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
-      if (!sourceW || !sourceH) throw new Error('Source dimensions not ready.');
+  minAreaRatio,
+  morphKernel,
+  filterBorderMargin,
+  filterPadding,
+  filterMinSolidity,
+  filterMaxAspect,
+  filterMaxPieces,
 
-      const targetWidth = 640;
-      const scale = sourceW > targetWidth ? targetWidth / sourceW : 1;
-      const pw = Math.max(1, Math.round(sourceW * scale));
-      const ph = Math.max(1, Math.round(sourceH * scale));
+  ensureOpenCvReady,
 
-      if (inputCanvas.width !== pw) inputCanvas.width = pw;
-      if (inputCanvas.height !== ph) inputCanvas.height = ph;
+  setLiveStatus,
+  setLiveInfo,
+  setLiveError,
 
-      ctx.clearRect(0, 0, pw, ph);
-      ctx.drawImage(source as any, 0, 0, pw, ph);
+  setSegStatus,
+  setSegError,
+  setSegPieces,
+  setSegDebug,
+  setSegResult,
+  setFrameQuality,
 
-      const img = ctx.getImageData(0, 0, pw, ph);
+  setExtractStatus,
+  setExtractError,
+  setExtractDebug,
+  setExtractedPieces,
+  setClassifyDebug
+});
 
-      const pipeline = livePipeline as VisionPipeline;
-      const res = await workerClientRef.current.process({
-        pipeline,
-        width: pw,
-        height: ph,
-        sourceWidth: sourceW,
-        sourceHeight: sourceH,
-        scaleToSource: sourceW / pw,
-        buffer: img.data.buffer,
-        segOptions: {
-          minAreaRatio,
-          blurKernelSize: 5,
-          morphKernelSize: morphKernel
-        },
-        extractOptions: {
-          borderMarginPx: filterBorderMargin,
-          paddingPx: filterPadding,
-          minSolidity: filterMinSolidity,
-          maxAspectRatio: filterMaxAspect,
-          maxPieces: filterMaxPieces
-        }
-      });
 
-setSegPieces((res.segmentation?.pieces ?? []) as any);
-const seg = res.segmentation as any;
-	setSegResult((seg as any) ?? null);
-	setFrameQuality(((seg as any)?.quality ?? null) as any);
-if (seg?.debug) {
-  setSegDebug(
-    [
-      `Segmentation: ${(seg.pieces?.length ?? 0)} piece(s)`,
-      `Contours: ${seg.debug.contoursFound ?? '?'}`,
-      `Proc: ${seg.debug.processedWidth ?? '?'}×${seg.debug.processedHeight ?? '?'}${seg.debug.inverted ? ' (inverted)' : ''}`
-    ].join('\n')
-  );
-} else {
-  setSegDebug(`Segmentation: ${(seg?.pieces?.length ?? 0)} piece(s)`);
-}
-if (pipeline !== 'segment') {
-        setExtractedPieces((res.extracted?.pieces ?? []) as any);
-        setExtractDebug(res.extracted?.debug ?? '');
-      }
-
-      if (pipeline === 'classify') {
-        setExtractedPieces((res.classified?.pieces ?? []) as any);
-        setClassifyDebug(res.classified?.debug ?? '');
-      }
-
-      // The worker currently does not render the segmentation preview mask; clear the preview canvas.
-      const outCtx = safeGet2DContext(outputCanvas);
-      outCtx?.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
-
-      setLiveInfo(`Worker: ${pipeline} • pieces: ${res.segmentation?.pieces?.length ?? 0}`);
-      return;
-    }
-
-  const cv = await ensureOpenCvReady();
-
-  const t0 = performance.now();
-
-  const seg = segmentPiecesFromFrame({
-    cv,
-    source: source as any,
-    inputCanvas,
-    outputCanvas,
-    options: {
-      targetWidth: 640,
-      minAreaRatio,
-      morphKernelSize: morphKernel
-    }
-  });
-
-  setSegPieces(seg.pieces);
-  setSegResult(seg);
-	setFrameQuality(seg.quality ?? null);
-  setSegStatus('done');
-  setSegError('');
-  setSegDebug(
-    [
-      `Segmentation: ${seg.pieces.length} piece(s)`,
-      `Contours: ${seg.debug.contoursFound}`,
-      `Proc: ${seg.debug.processedWidth}×${seg.debug.processedHeight}${seg.debug.inverted ? ' (inverted)' : ''}`
-    ].join('\n')
-  );
-
-  let extracted: ExtractedPiece[] = [];
-
-  if (livePipeline === 'segment') {
-    setExtractedPieces([]);
-    setExtractStatus('idle');
-    setExtractError('');
-    setExtractDebug('');
-    setClassifyDebug('');
-  } else {
-    const { pieces, debug } = filterAndExtractPieces({
-      cv,
-      segmentation: seg,
-      processedFrameCanvas: inputCanvas,
-      options: {
-        borderMarginPx: filterBorderMargin,
-        paddingPx: filterPadding,
-        minSolidity: filterMinSolidity,
-        maxAspectRatio: filterMaxAspect,
-        maxPieces: filterMaxPieces
-      }
-    });
-
-    extracted = pieces;
-
-    setExtractedPieces(pieces);
-    setExtractStatus('done');
-    setExtractError('');
-    setExtractDebug(`Extracted: ${pieces.length}
-${debug}`);
-if (livePipeline === 'classify') {
-      const classified = classifyEdgeCornerMvp({
-        cv,
-        processedFrameCanvas: inputCanvas,
-        pieces
-      });
-      setExtractedPieces(classified.pieces);
-      setClassifyDebug(classified.debug);
-    }
-  }
-
-  const dt = performance.now() - t0;
-  liveTickCountRef.current += 1;
-  setLiveInfo(
-    [
-      `Tick #${liveTickCountRef.current}`,
-      `Pipeline: ${livePipeline}`,
-      `Seg: ${seg.pieces.length}`,
-      livePipeline === 'segment' ? '' : `Extract: ${extracted.length}`,
-      `Time: ${dt.toFixed(0)} ms`
-    ]
-      .filter(Boolean)
-      .join(' · ')
-  );
-};
-
-useEffect(() => {
-  if (!liveModeEnabled) {
-    stopLiveProcessing();
-    return;
-  }
-
-  if (processingTimerRef.current != null) {
-    stopHelloOpenCvProcessing();
-  }
-
-  if (status !== 'live' && status !== 'captured') {
-    return;
-  }
-
-  const intervalMs = Math.max(200, Math.round(1000 / Math.max(0.5, liveFps)));
-  setLiveStatus('running');
-  setLiveError('');
-
-  const tick = async () => {
-    if (liveInFlightRef.current) return;
-    if (!liveModeEnabled) return;
-    if (document.hidden) return;
-    if (status !== 'live' && status !== 'captured') return;
-
-    const v = videoRef.current;
-    if (status === 'live' && (!v || (v.videoWidth || 0) === 0)) return;
-
-    liveInFlightRef.current = true;
-    try {
-      await runLivePipelineOnce();
-    } catch (e) {
-      setLiveStatus('error');
-      setLiveError(formatError(e));
-    } finally {
-      liveInFlightRef.current = false;
-    }
-  };
-
-  tick();
-  liveTimerRef.current = window.setInterval(tick, intervalMs);
-
-  return () => {
-    stopLiveProcessing();
-  };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [liveModeEnabled, liveFps, livePipeline, status, minAreaRatio, morphKernel, filterBorderMargin, filterPadding, filterMinSolidity, filterMaxAspect, filterMaxPieces]);
 
 
 // Stop processing whenever we leave the live camera mode, and on unmount.
@@ -894,7 +705,6 @@ const classifyPiecesNow = async () => {
 
 
   const stopCamera = () => {
-    stopLiveProcessing();
     camera.stopCamera();
     setSegPieces([]);
     setSegStatus('idle');
