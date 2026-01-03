@@ -12,6 +12,7 @@ import type { CameraStatus, OverlayOptions } from '../types/overlay';
 import { drawOverlay } from '../lib/overlay/drawOverlay';
 import { useCameraStream } from '../hooks/useCameraStream';
 import { useVisionTick } from '../hooks/useVisionTick';
+import { CameraControlsCard, CameraIntroCard, CameraViewport } from '../components/camera';
 
 function getAppBasePath(): string {
   // Runtime base path used for loading assets under a non-root deploy (e.g. GitHub Pages).
@@ -720,632 +721,129 @@ const classifyPiecesNow = async () => {
 
   return (
     <>
-      <div className="card">
-        <h2>Camera</h2>
-        <p className="muted">
-          Step 3 implementation: live camera stream + canvas overlay + OpenCV "Hello" frame processor (edges preview).
-        </p>
-      </div>
+      <CameraIntroCard />
 
-      <div className="cameraStage card">
-        <div className="cameraViewport" aria-label="Camera viewport">
-          <video
-            ref={videoRef}
-            className={status === 'captured' ? 'hidden' : 'cameraLayer'}
-            autoPlay
-            playsInline
-            muted
-          />
-          <canvas
-            ref={stillCanvasRef}
-            className={status === 'captured' ? 'cameraLayer' : 'hidden'}
-            aria-label="Captured frame"
-          />
-          <canvas
-            ref={overlayCanvasRef}
-            className="cameraOverlay"
-            aria-label="Overlay"
-            onPointerDown={handleOverlayPointerDown}
-          />
-        </div>
-
-        {status === 'error' && (
-          <div className="cameraError" role="alert">
-            <strong>Camera error:</strong> {errorMessage}
-          </div>
-        )}
-      </div>
-
-      <div className="card">
-        <h2>Controls</h2>
-
-        <div className="buttonRow">
-          <button className="btn btnPrimary" onClick={startCamera} disabled={status === 'starting' || status === 'live' || status === 'captured'}>
-            Start camera
-          </button>
-          <button className="btn btnDanger" onClick={stopCamera} disabled={status === 'idle'}>
-            Stop camera
-          </button>
-          <button className="btn" onClick={() => camera.captureFrame(stillCanvasRef.current)} disabled={status !== 'live'}>
-            Capture frame
-          </button>
-          <button className="btn" onClick={() => void camera.backToLive()} disabled={status !== 'captured'}>
-            Back to live
-          </button>
-</div>
-
-
-        <div className="opencvPanel" aria-label="Overlays panel" style={{ marginTop: 12 }}>
-          <div className="row">
-            <strong>Overlays</strong>
-            <span className="muted" style={{ marginLeft: 10 }}>
-              Source: <strong>{overlaySource}</strong>
-              {selectedPieceId != null ? (
-                <>
-                  {' '}
-                  · Selected: <strong>#{selectedPieceId}</strong>
-                </>
-              ) : null}
-            </span>
-          </div>
-
-          <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
-            <label className="selectField">
-              <span className="muted">Source</span>
-              <select
-                value={overlaySource}
-                onChange={(e) => {
-                  setOverlaySource(e.target.value as 'segmented' | 'extracted');
-                  setSelectedPieceId(null);
-                }}
-              >
-                <option value="segmented">Segmented</option>
-                <option value="extracted">Extracted</option>
-              </select>
-            </label>
-
-            <label className="checkboxField">
-              <input
-                type="checkbox"
-                checked={overlayTapToSelect}
-                onChange={(e) => setOverlayTapToSelect(e.target.checked)}
-              />
-              <span className="muted">Tap to select</span>
-            </label>
-
-            <label className="checkboxField">
-              <input type="checkbox" checked={overlayShowContours} onChange={(e) => setOverlayShowContours(e.target.checked)} />
-              <span className="muted">Contours</span>
-            </label>
-
-            <label className="checkboxField">
-              <input type="checkbox" checked={overlayShowBBoxes} onChange={(e) => setOverlayShowBBoxes(e.target.checked)} />
-              <span className="muted">BBoxes</span>
-            </label>
-
-            <label className="checkboxField">
-              <input type="checkbox" checked={overlayShowLabels} onChange={(e) => setOverlayShowLabels(e.target.checked)} />
-              <span className="muted">Labels</span>
-            </label>
-
-            <label className="selectField">
-              <span className="muted">Label mode</span>
-              <select
-                value={overlayLabelMode}
-                onChange={(e) => setOverlayLabelMode(e.target.value as 'id' | 'id+class')}
-              >
-                <option value="id">ID</option>
-                <option value="id+class">ID + class</option>
-              </select>
-            </label>
-          </div>
-
-          <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
-            <label className="checkboxField">
-              <input type="checkbox" checked={overlayShowGrid} onChange={(e) => setOverlayShowGrid(e.target.checked)} />
-              <span className="muted">Grid</span>
-            </label>
-
-            <label className="checkboxField">
-              <input
-                type="checkbox"
-                checked={overlayShowCrosshair}
-                onChange={(e) => setOverlayShowCrosshair(e.target.checked)}
-              />
-              <span className="muted">Crosshair</span>
-            </label>
-
-            <label className="checkboxField">
-              <input
-                type="checkbox"
-                checked={overlayShowStatusChip}
-                onChange={(e) => setOverlayShowStatusChip(e.target.checked)}
-              />
-              <span className="muted">Status chip</span>
-            </label>
-
-            <label className="checkboxField">
-              <input
-                type="checkbox"
-                checked={overlayShowDebugText}
-                onChange={(e) => setOverlayShowDebugText(e.target.checked)}
-              />
-              <span className="muted">Debug text</span>
-            </label>
-
-            <label className="checkboxField">
-              <input
-                type="checkbox"
-                checked={overlayUseClassColors}
-                onChange={(e) => setOverlayUseClassColors(e.target.checked)}
-              />
-              <span className="muted">Class colors</span>
-            </label>
-          </div>
-
-          <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
-            <label className="rangeField">
-              <span className="muted">Opacity</span>
-              <input
-                type="range"
-                min={0.2}
-                max={1}
-                step={0.05}
-                value={overlayOpacity}
-                onChange={(e) => setOverlayOpacity(Number(e.target.value))}
-              />
-              <span className="mono">{overlayOpacity.toFixed(2)}</span>
-            </label>
-
-            <label className="rangeField">
-              <span className="muted">Line width</span>
-              <input
-                type="range"
-                min={1}
-                max={6}
-                step={1}
-                value={overlayLineWidth}
-                onChange={(e) => setOverlayLineWidth(Number(e.target.value))}
-              />
-              <span className="mono">{overlayLineWidth}</span>
-            </label>
-
-            <button className="btn" onClick={() => setSelectedPieceId(null)} disabled={selectedPieceId == null}>
-              Clear selection
-            </button>
-          </div>
-
-          <p className="muted" style={{ marginTop: 10 }}>
-            Tip: Tap a piece on the overlay to select it. Use &quot;Segmented&quot; to inspect raw segmentation candidates
-            and &quot;Extracted&quot; to inspect filtered/extracted pieces.
-          </p>
-        </div>
-
-
-<div className="opencvPanel" aria-label="Near-real-time panel" style={{ marginTop: 12 }}>
-  <div className="row">
-    <strong>Near-real-time</strong>
-    <span className="muted" style={{ marginLeft: 10 }}>
-      Status: <strong>{liveModeEnabled ? liveStatus : 'idle'}</strong>
-    </span>
-  </div>
-
-  <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
-    <label className="checkboxField">
-      <input type="checkbox" checked={liveModeEnabled} onChange={(e) => setLiveModeEnabled(e.target.checked)} />
-      <span className="muted">Enable live processing</span>
-    </label>
-
-    <label className="checkboxField">
-      <input type="checkbox" checked={useWorker} onChange={(e) => setUseWorker(e.target.checked)} />
-      <span className="muted">Use worker</span>
-    </label>
-    <span className="muted" style={{ marginLeft: 6 }}>
-      Worker: <strong>{workerStatus}</strong>
-      {workerError ? <span style={{ marginLeft: 8 }}>({workerError})</span> : null}
-    </span>
-
-    <label className="rangeField" style={{ minWidth: 220 }}>
-      <span className="muted">Rate (fps)</span>
-      <input
-        type="range"
-        min={1}
-        max={10}
-        step={1}
-        value={liveFps}
-        onChange={(e) => setLiveFps(Number(e.target.value))}
-        disabled={!liveModeEnabled}
+      <CameraViewport
+        videoRef={videoRef}
+        stillCanvasRef={stillCanvasRef}
+        overlayCanvasRef={overlayCanvasRef}
+        status={status}
+        errorMessage={errorMessage}
+        onOverlayPointerDown={handleOverlayPointerDown}
       />
-      <span className="mono">{liveFps}</span>
-    </label>
 
-    <label className="rangeField" style={{ minWidth: 260 }}>
-      <span className="muted">Pipeline</span>
-      <select
-        value={livePipeline}
-        onChange={(e) => setLivePipeline(e.target.value as any)}
-        disabled={!liveModeEnabled}
-        className="select"
-      >
-        <option value="segment">Segmentation</option>
-        <option value="extract">Segmentation + extraction</option>
-        <option value="classify">Segmentation + extraction + classify</option>
-      </select>
-      <span className="mono" />
-    </label>
+      <CameraControlsCard
+        status={status}
+        streamInfo={streamInfo ?? ''}
+        onStartCamera={startCamera}
+        onStopCamera={stopCamera}
+        onCaptureFrame={() => camera.captureFrame(stillCanvasRef.current)}
+        onBackToLive={() => void camera.backToLive()}
 
-    <button className="btn" onClick={() => setLiveModeEnabled(false)} disabled={!liveModeEnabled}>
-      Stop live mode
-    </button>
-  </div>
+        overlaySource={overlaySource}
+        setOverlaySource={setOverlaySource}
+        selectedPieceId={selectedPieceId}
+        setSelectedPieceId={setSelectedPieceId}
 
-  {liveInfo && (
-    <p className="muted" style={{ marginTop: 10 }}>
-      {liveInfo}
-    </p>
-  )}
+        overlayShowGrid={overlayShowGrid}
+        setOverlayShowGrid={setOverlayShowGrid}
+        overlayShowCrosshair={overlayShowCrosshair}
+        setOverlayShowCrosshair={setOverlayShowCrosshair}
+        overlayShowStatusChip={overlayShowStatusChip}
+        setOverlayShowStatusChip={setOverlayShowStatusChip}
+        overlayShowDebugText={overlayShowDebugText}
+        setOverlayShowDebugText={setOverlayShowDebugText}
+        overlayTapToSelect={overlayTapToSelect}
+        setOverlayTapToSelect={setOverlayTapToSelect}
+        overlayShowContours={overlayShowContours}
+        setOverlayShowContours={setOverlayShowContours}
+        overlayShowBBoxes={overlayShowBBoxes}
+        setOverlayShowBBoxes={setOverlayShowBBoxes}
+        overlayShowLabels={overlayShowLabels}
+        setOverlayShowLabels={setOverlayShowLabels}
 
-  {liveError && (
-    <p className="muted" style={{ marginTop: 10 }}>
-      Live error: <strong>{liveError}</strong>
-    </p>
-  )}
+        overlayLabelMode={overlayLabelMode}
+        setOverlayLabelMode={setOverlayLabelMode}
+        overlayUseClassColors={overlayUseClassColors}
+        setOverlayUseClassColors={setOverlayUseClassColors}
+        overlayOpacity={overlayOpacity}
+        setOverlayOpacity={setOverlayOpacity}
+        overlayLineWidth={overlayLineWidth}
+        setOverlayLineWidth={setOverlayLineWidth}
 
-  <p className="muted" style={{ marginTop: 10 }}>
-    Tip: start at 1–3 fps for stability. Higher rates may cause battery drain and dropped frames on mobile.
-  </p>
-</div>
+        liveModeEnabled={liveModeEnabled}
+        setLiveModeEnabled={setLiveModeEnabled}
+        livePipeline={livePipeline}
+        setLivePipeline={setLivePipeline}
+        liveFps={liveFps}
+        setLiveFps={setLiveFps}
+        liveStatus={liveStatus}
+        liveInfo={liveInfo}
+        liveError={liveError}
 
-	<div className="opencvPanel" aria-label="Quality panel" style={{ marginTop: 12 }}>
-	  <div className="row">
-	    <strong>Quality</strong>
-	    <span className="muted" style={{ marginLeft: 10 }}>
-	      Status: <strong>{qualityStatus}</strong>
-	    </span>
-	  </div>
+        useWorker={useWorker}
+        setUseWorker={setUseWorker}
+        workerStatus={workerStatus}
+        workerError={workerError}
 
-	  {!frameQuality && (
-	    <p className="muted" style={{ marginTop: 10 }}>
-	      Run segmentation/extraction (or enable live processing) to get lighting/focus guidance.
-	    </p>
-	  )}
+        frameQuality={frameQuality}
+        qualityStatus={qualityStatus}
+        qualityGuidance={qualityGuidance}
 
-	  {frameQuality && (
-	    <>
-	      <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
-	        <span className="mono">mean {frameQuality.mean.toFixed(0)}</span>
-	        <span className="mono">contrast {frameQuality.std.toFixed(0)}</span>
-	        {typeof frameQuality.lapVar === 'number' && <span className="mono">sharp {frameQuality.lapVar.toFixed(0)}</span>}
-	        {typeof frameQuality.motion === 'number' && <span className="mono">motion {frameQuality.motion.toFixed(0)}</span>}
-	        {(() => {
-	          const fg = frameQuality.foregroundRatio ?? frameQuality.fgRatio;
-	          return typeof fg === 'number' ? <span className="mono">fg {(fg * 100).toFixed(1)}%</span> : null;
-	        })()}
-	        <span className="mono">pieces {segPieces.length}</span>
-	      </div>
+        segPieces={segPieces}
+        segResult={segResult}
+        segStatus={segStatus}
+        segError={segError}
+        segDebug={segDebug}
+        segmentPiecesNow={segmentPiecesNow}
+        clearSegmentation={clearSegmentation}
 
-	      {qualityGuidance.length === 0 ? (
-	        <p className="muted" style={{ marginTop: 10 }}>
-	          Looks good. For best results: keep pieces separated, avoid glare, and hold the camera steady.
-	        </p>
-	      ) : (
-	        <ul style={{ marginTop: 10, paddingLeft: 18 }}>
-	          {qualityGuidance.map((g) => (
-	            <li key={g.key} className={g.level === 'bad' ? 'textBad' : g.level === 'warn' ? 'textWarn' : 'muted'}>
-	              {g.message}
-	            </li>
-	          ))}
-	        </ul>
-	      )}
+        minAreaRatio={minAreaRatio}
+        setMinAreaRatio={setMinAreaRatio}
+        morphKernel={morphKernel}
+        setMorphKernel={setMorphKernel}
 
-	      {(status === 'error' || workerStatus === 'error' || liveError) && (
-	        <div style={{ marginTop: 10 }}>
-	          <p className="muted">
-	            If things look stuck: try reloading, toggling <strong>Use worker</strong>, or stopping/starting the camera.
-	          </p>
-	        </div>
-	      )}
-	    </>
-	  )}
-	</div>
+        extractStatus={extractStatus}
+        extractError={extractError}
+        extractDebug={extractDebug}
+        classifyDebug={classifyDebug}
+        extractPiecesNow={extractPiecesNow}
+        classifyPiecesNow={classifyPiecesNow}
 
-<div className="opencvPanel" aria-label="OpenCV panel">
-  <div className="row">
-    <strong>OpenCV</strong>
-    <span className="muted" style={{ marginLeft: 10 }}>
-      Status: <strong>{opencvStatus}</strong>
-      {opencvBuildInfoLine ? <> · {opencvBuildInfoLine}</> : null}
-    </span>
-  </div>
+        extractedPieces={extractedPieces}
+        setExtractedPieces={setExtractedPieces}
+        setExtractStatus={setExtractStatus}
+        setExtractError={setExtractError}
+        setExtractDebug={setExtractDebug}
+        setClassifyDebug={setClassifyDebug}
 
-  <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
-    <button className="btn"
-      onClick={isProcessing ? stopHelloOpenCvProcessing : startHelloOpenCvProcessing}
-      disabled={status !== 'live' && !isProcessing}
-    >
-      {isProcessing ? 'Stop OpenCV processing' : 'Start OpenCV processing'}
-    </button>
+        opencvStatus={opencvStatus}
+        opencvError={opencvError}
+        opencvBuildInfoLine={opencvBuildInfoLine ?? ''}
+        opencvReady={!!cvRef.current}
+        isProcessing={isProcessing}
+        onToggleHelloProcessing={() =>
+          void (isProcessing ? stopHelloOpenCvProcessing() : startHelloOpenCvProcessing())
+        }
 
-    <label className="rangeField">
-      <span className="muted">Canny low</span>
-      <input
-        type="range"
-        min={0}
-        max={255}
-        value={cannyLow}
-        disabled={!cvRef.current}
-        onChange={(e) => setCannyLow(Number(e.target.value))}
+        cannyLow={cannyLow}
+        setCannyLow={setCannyLow}
+        cannyHigh={cannyHigh}
+        setCannyHigh={setCannyHigh}
+        processingInputCanvasRef={processingInputCanvasRef}
+        processedCanvasRef={processedCanvasRef}
+
+        filterMaxPieces={filterMaxPieces}
+        setFilterMaxPieces={setFilterMaxPieces}
+        filterMinSolidity={filterMinSolidity}
+        setFilterMinSolidity={setFilterMinSolidity}
+        filterMaxAspect={filterMaxAspect}
+        setFilterMaxAspect={setFilterMaxAspect}
+        filterBorderMargin={filterBorderMargin}
+        setFilterBorderMargin={setFilterBorderMargin}
+        filterPadding={filterPadding}
+        setFilterPadding={setFilterPadding}
       />
-      <span className="mono">{cannyLow}</span>
-    </label>
-
-    <label className="rangeField">
-      <span className="muted">Canny high</span>
-      <input
-        type="range"
-        min={0}
-        max={255}
-        value={cannyHigh}
-        disabled={!cvRef.current}
-        onChange={(e) => setCannyHigh(Number(e.target.value))}
-      />
-      <span className="mono">{cannyHigh}</span>
-    </label>
-  </div>
-
-  <div className="processedViewport" style={{ marginTop: 12 }}>
-    <canvas ref={processedCanvasRef} className="processedCanvas" aria-label="Processed preview" />
-  </div>
-
-  {/* Hidden input canvas used for OpenCV processing (read by cv.imread). */}
-  <canvas ref={processingInputCanvasRef} className="hidden" aria-hidden="true" />
-
-  {opencvError ? (
-    <p className="cameraError" role="alert" style={{ marginTop: 12 }}>
-      OpenCV error: {opencvError}
-    </p>
-  ) : null}
-
-  <p className="muted" style={{ marginTop: 10 }}>
-    Tip: Start camera first, then start OpenCV processing to see a live edge preview.
-  </p>
-</div>
-
-
-
-<div className="opencvPanel" aria-label="Segmentation panel" style={{ marginTop: 12 }}>
-  <div className="row">
-    <strong>Segmentation</strong>
-    <span className="muted" style={{ marginLeft: 10 }}>
-      State: <strong>{segStatus}</strong>
-      {segPieces.length ? <> · Pieces: <strong>{segPieces.length}</strong></> : null}
-    </span>
-  </div>
-
-  <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
-    <button className="btn btnPrimary" onClick={segmentPiecesNow} disabled={(status !== 'live' && status !== 'captured') || opencvStatus === 'loading' || isProcessing}>
-      Segment pieces
-    </button>
-    <button className="btn" onClick={clearSegmentation} disabled={segPieces.length === 0 && segStatus === 'idle'}>
-      Clear
-    </button>
-
-    <label className="rangeField">
-      <span className="muted">Min area</span>
-      <input
-        type="range"
-        min={0.0005}
-        max={0.01}
-        step={0.0005}
-        value={minAreaRatio}
-        onChange={(e) => setMinAreaRatio(Number(e.target.value))}
-        disabled={segStatus === 'running'}
-      />
-      <span className="mono">{minAreaRatio.toFixed(4)}</span>
-    </label>
-
-    <label className="rangeField">
-      <span className="muted">Morph k</span>
-      <input
-        type="range"
-        min={3}
-        max={15}
-        step={2}
-        value={morphKernel}
-        onChange={(e) => setMorphKernel(Number(e.target.value))}
-        disabled={segStatus === 'running'}
-      />
-      <span className="mono">{morphKernel}</span>
-    </label>
-  </div>
-
-  {segError ? (
-    <p className="cameraError" role="alert" style={{ marginTop: 12 }}>
-      Segmentation error: {segError}
-    </p>
-  ) : null}
-
-  {segDebug ? (
-    <p className="muted" style={{ marginTop: 10, whiteSpace: 'pre-line' }}>
-      {segDebug}
-    </p>
-  ) : (
-    <p className="muted" style={{ marginTop: 10 }}>
-      Tip: Use a plain, contrasting background and avoid overlapping pieces for best results.
-    </p>
-  )}
-
-<div className="opencvPanel" aria-label="Pieces panel" style={{ marginTop: 12 }}>
-  <div className="row">
-    <strong>Per-piece extraction</strong>
-    <span className="muted" style={{ marginLeft: 10 }}>
-      State: <strong>{extractStatus}</strong>
-      {extractedPieces.length ? <> · Extracted: <strong>{extractedPieces.length}</strong></> : null}
-      {selectedPieceId != null ? <> · Selected: <strong>#{selectedPieceId}</strong></> : null}
-    </span>
-  </div>
-
-  <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
-    <button
-      className="btn btnPrimary"
-      onClick={extractPiecesNow}
-      disabled={(status !== 'live' && status !== 'captured') || !segResult || segStatus === 'running' || extractStatus === 'running' || isProcessing}
-    >
-      Extract pieces
-    </button>
-
-    <button
-      className="btn"
-      onClick={classifyPiecesNow}
-      disabled={opencvStatus === 'loading' || isProcessing || extractedPieces.length === 0}
-    >
-      Classify edges/corners
-    </button>
-
-    <button
-      className="btn"
-      onClick={() => {
-        setExtractedPieces([]);
-        setSelectedPieceId(null);
-        setExtractStatus('idle');
-        setExtractError('');
-        setExtractDebug('');
-        setClassifyDebug('');
-      }}
-      disabled={extractedPieces.length === 0 && extractStatus === 'idle'}
-    >
-      Clear
-    </button>
-
-    <label className="rangeField">
-      <span className="muted">Min solidity</span>
-      <input
-        type="range"
-        min={0.5}
-        max={0.98}
-        step={0.01}
-        value={filterMinSolidity}
-        onChange={(e) => setFilterMinSolidity(Number(e.target.value))}
-        disabled={extractStatus === 'running'}
-      />
-      <span className="mono">{filterMinSolidity.toFixed(2)}</span>
-    </label>
-
-    <label className="rangeField">
-      <span className="muted">Max aspect</span>
-      <input
-        type="range"
-        min={1}
-        max={8}
-        step={0.25}
-        value={filterMaxAspect}
-        onChange={(e) => setFilterMaxAspect(Number(e.target.value))}
-        disabled={extractStatus === 'running'}
-      />
-      <span className="mono">{filterMaxAspect.toFixed(2)}</span>
-    </label>
-
-    <label className="rangeField">
-      <span className="muted">Border margin</span>
-      <input
-        type="range"
-        min={0}
-        max={30}
-        step={1}
-        value={filterBorderMargin}
-        onChange={(e) => setFilterBorderMargin(Number(e.target.value))}
-        disabled={extractStatus === 'running'}
-      />
-      <span className="mono">{filterBorderMargin}px</span>
-    </label>
-
-    <label className="rangeField">
-      <span className="muted">Padding</span>
-      <input
-        type="range"
-        min={0}
-        max={30}
-        step={1}
-        value={filterPadding}
-        onChange={(e) => setFilterPadding(Number(e.target.value))}
-        disabled={extractStatus === 'running'}
-      />
-      <span className="mono">{filterPadding}px</span>
-    </label>
-
-    <label className="rangeField">
-      <span className="muted">Max pieces</span>
-      <input
-        type="range"
-        min={10}
-        max={200}
-        step={10}
-        value={filterMaxPieces}
-        onChange={(e) => setFilterMaxPieces(Number(e.target.value))}
-        disabled={extractStatus === 'running'}
-      />
-      <span className="mono">{filterMaxPieces}</span>
-    </label>
-  </div>
-
-  {extractError ? (
-    <p className="cameraError" role="alert" style={{ marginTop: 12 }}>
-      Extraction error: {extractError}
-    </p>
-  ) : null}
-
-  {extractDebug ? (
-    <p className="muted" style={{ marginTop: 10, whiteSpace: 'pre-line' }}>
-      {extractDebug}
-    </p>
-  ) : (
-    <p className="muted" style={{ marginTop: 10 }}>
-      Tip: If pieces are missing, try adjusting &quot;Min area&quot; (segmentation) first, then relax solidity/aspect filters.
-    </p>
-  )}
-
-
-{classifyDebug ? (
-  <p className="muted" style={{ marginTop: 10, whiteSpace: 'pre-line' }}>
-    {classifyDebug}
-  </p>
-) : null}
-
-  {extractedPieces.length ? (
-    <div className="pieceGrid" style={{ marginTop: 12 }}>
-      {extractedPieces.map((p) => (
-        <button
-          key={p.id}
-          type="button"
-          className={`pieceThumb ${selectedPieceId === p.id ? 'selected' : ''}`}
-          onClick={() => setSelectedPieceId(p.id)}
-          title={`#${p.id} · solidity ${p.solidity.toFixed(2)} · aspect ${p.aspectRatio.toFixed(2)}`}
-        >
-          <img className="pieceImg" src={p.previewUrl} alt={`Piece ${p.id}`} />
-          <div className="pieceMeta">
-            <span className="mono">#{p.id}</span>
-            <span className="muted">{Math.round(p.solidity * 100)}%</span>
-            {p.classification ? (
-              <span className={`badge badge_${p.classification}`}>{p.classification}</span>
-            ) : null}
-          </div>
-        </button>
-      ))}
-    </div>
-  ) : null}
-</div>
-
-</div>
-<p className="muted" style={{ marginTop: 12 }}>
-
-          Status: <strong>{status}</strong>
-          {streamInfo ? <> · {streamInfo}</> : null}
-        </p>
-
-        <p className="muted">
-          Tip: For later computer vision steps, a plain contrasting background and non-overlapping pieces will improve results.
-        </p>
-      </div>
     </>
   );
 }
