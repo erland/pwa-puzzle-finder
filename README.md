@@ -47,4 +47,13 @@ Make sure the repository name stays `pwa-puzzle-finder` (or update `vite.config.
 npm test
 ```
 
+Other useful commands:
+
+```bash
+npm run test:watch
+npm run test:coverage
+```
+
 Tests live in `__tests__` folders next to the code they test.
+
+See `docs/testing-strategy.md` and `docs/manual-test-checklist.md` for practical guidance (automated + manual).
