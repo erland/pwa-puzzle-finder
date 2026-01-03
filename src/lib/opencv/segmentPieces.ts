@@ -1,4 +1,5 @@
 import type { OpenCvModule } from './loadOpenCV';
+import type { FrameQuality } from '../vision/quality';
 
 export type SegmentPiecesOptions = {
   /** Target width used for processing (downscales to keep CPU manageable). */
@@ -32,7 +33,62 @@ export type SegmentPiecesResult = {
     piecesKept: number;
     contoursFound: number;
   };
+  quality?: FrameQuality;
 };
+
+function clamp01(v: number) {
+  return Math.max(0, Math.min(1, v));
+}
+
+function computeQualityFromGray(cv: OpenCvModule, gray: any, binaryMask?: any): FrameQuality {
+  // mean/std
+  const mean = new cv.Mat();
+  const std = new cv.Mat();
+  cv.meanStdDev(gray, mean, std);
+  const meanV = mean.data64F ? mean.data64F[0] : mean.dataF[0];
+  const stdV = std.data64F ? std.data64F[0] : std.dataF[0];
+
+  // Laplacian variance (blur indicator)
+  let lapVar: number | undefined;
+  try {
+    const lap = new cv.Mat();
+    cv.Laplacian(gray, lap, cv.CV_64F, 1, 1, 0, cv.BORDER_DEFAULT);
+    const m2 = new cv.Mat();
+    const s2 = new cv.Mat();
+    cv.meanStdDev(lap, m2, s2);
+    const s = s2.data64F ? s2.data64F[0] : s2.dataF[0];
+    lapVar = s * s;
+    lap.delete();
+    m2.delete();
+    s2.delete();
+  } catch {
+    // ignore; some builds may not support CV_64F ops well
+  }
+
+  let foregroundRatio: number | undefined;
+  if (binaryMask) {
+    try {
+      const nonZero = cv.countNonZero(binaryMask);
+      const total = binaryMask.rows * binaryMask.cols;
+      foregroundRatio = total > 0 ? clamp01(nonZero / total) : 0;
+    } catch {
+      foregroundRatio = undefined;
+    }
+  }
+
+  mean.delete();
+  std.delete();
+
+  return {
+    width: gray.cols,
+    height: gray.rows,
+    mean: Number(meanV) || 0,
+    std: Number(stdV) || 0,
+    lapVar,
+    fgRatio: foregroundRatio,
+    foregroundRatio
+  };
+}
 
 /**
  * Segment puzzle pieces from a mostly-uniform background.
@@ -123,6 +179,7 @@ export function segmentPiecesFromFrame(params: {
   const hierarchy = new cv.Mat();
 
   let inverted = false;
+  let quality: FrameQuality | undefined;
 
   try {
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
@@ -151,6 +208,10 @@ export function segmentPiecesFromFrame(params: {
     // Clean mask: close gaps + remove small specks
     cv.morphologyEx(binary, tmp, cv.MORPH_CLOSE, kernel);
     cv.morphologyEx(tmp, binary, cv.MORPH_OPEN, kernel);
+
+    // Quality metrics (computed on processed frame)
+    const fg = clamp01(cv.countNonZero(binary) / (binary.rows * binary.cols));
+    quality = computeQualityFromGray(cv, blurred, fg);
 
     cv.findContours(binary, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
@@ -212,7 +273,8 @@ export function segmentPiecesFromFrame(params: {
         threshold: 'otsu',
         piecesKept: pieces.length,
         contoursFound: contours.size()
-      }
+      },
+      quality
     };
   } finally {
     src.delete();

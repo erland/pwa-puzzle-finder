@@ -5,6 +5,7 @@ import { segmentPiecesFromFrame, type PieceCandidate, type SegmentPiecesResult }
 import { filterAndExtractPieces, type ExtractedPiece } from '../lib/opencv/extractPieces';
 import { classifyEdgeCornerMvp } from '../lib/opencv/classifyPieces';
 import { VisionWorkerClient, type VisionPipeline } from '../lib/vision/visionWorkerClient';
+import { frameQualityToStatus, guidanceFromFrameQuality, type FrameQuality } from '../lib/vision/quality';
 
 type CameraStatus = 'idle' | 'starting' | 'live' | 'captured' | 'error';
 
@@ -341,6 +342,7 @@ const [cannyHigh, setCannyHigh] = useState<number>(120);
   const [segPieces, setSegPieces] = useState<PieceCandidate[]>([]);
   const [segDebug, setSegDebug] = useState<string>('');
 const [segResult, setSegResult] = useState<SegmentPiecesResult | null>(null);
+  const [frameQuality, setFrameQuality] = useState<FrameQuality | null>(null);
 
 // Step 5: filtering + per-piece extraction (transparent previews)
 const [extractStatus, setExtractStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle');
@@ -626,6 +628,8 @@ const runLivePipelineOnce = async () => {
 
 setSegPieces((res.segmentation?.pieces ?? []) as any);
 const seg = res.segmentation as any;
+	setSegResult((seg as any) ?? null);
+	setFrameQuality(((seg as any)?.quality ?? null) as any);
 if (seg?.debug) {
   setSegDebug(
     [
@@ -673,6 +677,7 @@ if (pipeline !== 'segment') {
 
   setSegPieces(seg.pieces);
   setSegResult(seg);
+	setFrameQuality(seg.quality ?? null);
   setSegStatus('done');
   setSegError('');
   setSegDebug(
@@ -1161,6 +1166,12 @@ const classifyPiecesNow = async () => {
     }
   };
 
+  const qualityStatus = useMemo(() => frameQualityToStatus(frameQuality), [frameQuality]);
+  const qualityGuidance = useMemo(
+    () => guidanceFromFrameQuality(frameQuality, { piecesFound: segPieces.length, maxPieces: filterMaxPieces }),
+    [frameQuality, segPieces.length, filterMaxPieces]
+  );
+
   useEffect(() => {
     return () => {
       stopStream();
@@ -1445,6 +1456,59 @@ const classifyPiecesNow = async () => {
     Tip: start at 1–3 fps for stability. Higher rates may cause battery drain and dropped frames on mobile.
   </p>
 </div>
+
+	<div className="opencvPanel" aria-label="Quality panel" style={{ marginTop: 12 }}>
+	  <div className="row">
+	    <strong>Quality</strong>
+	    <span className="muted" style={{ marginLeft: 10 }}>
+	      Status: <strong>{qualityStatus}</strong>
+	    </span>
+	  </div>
+
+	  {!frameQuality && (
+	    <p className="muted" style={{ marginTop: 10 }}>
+	      Run segmentation/extraction (or enable live processing) to get lighting/focus guidance.
+	    </p>
+	  )}
+
+	  {frameQuality && (
+	    <>
+	      <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
+	        <span className="mono">mean {frameQuality.mean.toFixed(0)}</span>
+	        <span className="mono">contrast {frameQuality.std.toFixed(0)}</span>
+	        {typeof frameQuality.lapVar === 'number' && <span className="mono">sharp {frameQuality.lapVar.toFixed(0)}</span>}
+	        {typeof frameQuality.motion === 'number' && <span className="mono">motion {frameQuality.motion.toFixed(0)}</span>}
+	        {(() => {
+	          const fg = frameQuality.foregroundRatio ?? frameQuality.fgRatio;
+	          return typeof fg === 'number' ? <span className="mono">fg {(fg * 100).toFixed(1)}%</span> : null;
+	        })()}
+	        <span className="mono">pieces {segPieces.length}</span>
+	      </div>
+
+	      {qualityGuidance.length === 0 ? (
+	        <p className="muted" style={{ marginTop: 10 }}>
+	          Looks good. For best results: keep pieces separated, avoid glare, and hold the camera steady.
+	        </p>
+	      ) : (
+	        <ul style={{ marginTop: 10, paddingLeft: 18 }}>
+	          {qualityGuidance.map((g) => (
+	            <li key={g.key} className={g.level === 'bad' ? 'textBad' : g.level === 'warn' ? 'textWarn' : 'muted'}>
+	              {g.message}
+	            </li>
+	          ))}
+	        </ul>
+	      )}
+
+	      {(status === 'error' || workerStatus === 'error' || liveError) && (
+	        <div style={{ marginTop: 10 }}>
+	          <p className="muted">
+	            If things look stuck: try reloading, toggling <strong>Use worker</strong>, or stopping/starting the camera.
+	          </p>
+	        </div>
+	      )}
+	    </>
+	  )}
+	</div>
 
 <div className="opencvPanel" aria-label="OpenCV panel">
   <div className="row">

@@ -274,6 +274,14 @@ input[type="range"]:disabled { opacity: 0.6; }
   background: rgba(255, 90, 102, 0.12);
 }
 
+.textWarn {
+  color: rgba(255, 215, 120, 0.95);
+}
+
+.textBad {
+  color: rgba(255, 120, 150, 0.95);
+}
+
 
 /* Step 5: piece extraction grid */
 .pieceGrid {

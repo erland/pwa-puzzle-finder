@@ -5,6 +5,13 @@
 /* eslint-disable no-restricted-globals */
 let __baseUrl = '/';
 let __cvPromise = null;
+
+// For a tiny motion heuristic in live mode.
+let __prevGraySmall = null;
+
+function clamp01(v) {
+  return Math.max(0, Math.min(1, v));
+}
 let __cvModule = null;
 let __preloadError = null;
 
@@ -189,6 +196,72 @@ function segmentPiecesFromRgba(cv, imageData, sourceW, sourceH, scaleToSource, o
     cv.morphologyEx(binary, tmp, cv.MORPH_CLOSE, kernel);
     cv.morphologyEx(tmp, binary, cv.MORPH_OPEN, kernel);
 
+    // Quality metrics (cheap heuristics)
+    let quality;
+    try {
+      const meanMat = new cv.Mat();
+      const stdMat = new cv.Mat();
+      cv.meanStdDev(gray, meanMat, stdMat);
+      const mean = meanMat.data64F ? meanMat.data64F[0] : meanMat.data32F[0];
+      const std = stdMat.data64F ? stdMat.data64F[0] : stdMat.data32F[0];
+
+      // Laplacian variance for blur estimate
+      const lap = new cv.Mat();
+      cv.Laplacian(gray, lap, cv.CV_64F, 1, 1, 0, cv.BORDER_DEFAULT);
+      const lapMean = new cv.Mat();
+      const lapStd = new cv.Mat();
+      cv.meanStdDev(lap, lapMean, lapStd);
+      const lapStdV = lapStd.data64F ? lapStd.data64F[0] : lapStd.data32F[0];
+      const lapVar = lapStdV * lapStdV;
+
+      // Foreground coverage
+      const fg = clamp01(cv.countNonZero(binary) / (binary.rows * binary.cols));
+
+      // Motion estimate (mean abs diff against previous small gray)
+      let motion;
+      try {
+        const targetW = 160;
+        const scale = gray.cols > targetW ? targetW / gray.cols : 1;
+        const w = Math.max(1, Math.round(gray.cols * scale));
+        const h = Math.max(1, Math.round(gray.rows * scale));
+        const small = new cv.Mat();
+        cv.resize(gray, small, new cv.Size(w, h), 0, 0, cv.INTER_AREA);
+        if (__prevGraySmall) {
+          const diff = new cv.Mat();
+          cv.absdiff(small, __prevGraySmall, diff);
+          const dm = new cv.Mat();
+          const ds = new cv.Mat();
+          cv.meanStdDev(diff, dm, ds);
+          motion = dm.data64F ? dm.data64F[0] : dm.data32F[0];
+          diff.delete();
+          dm.delete();
+          ds.delete();
+        }
+        if (__prevGraySmall) __prevGraySmall.delete();
+        __prevGraySmall = small;
+      } catch {
+        // ignore motion errors
+      }
+
+      quality = {
+        width: procW,
+        height: procH,
+        mean: Number(mean),
+        std: Number(std),
+        lapVar: Number(lapVar),
+        foregroundRatio: Number(fg),
+        motion: motion == null ? undefined : Number(motion)
+      };
+
+      meanMat.delete();
+      stdMat.delete();
+      lap.delete();
+      lapMean.delete();
+      lapStd.delete();
+    } catch {
+      // ignore quality errors
+    }
+
     cv.findContours(binary, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
     contoursFound = contours.size();
 
@@ -233,6 +306,7 @@ function segmentPiecesFromRgba(cv, imageData, sourceW, sourceH, scaleToSource, o
 
     return {
       pieces,
+      quality,
       debug: {
         sourceWidth: sourceW,
         sourceHeight: sourceH,
