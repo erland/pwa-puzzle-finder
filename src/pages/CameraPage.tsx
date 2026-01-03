@@ -6,6 +6,8 @@ import { filterAndExtractPieces, type ExtractedPiece } from '../lib/opencv/extra
 import { classifyEdgeCornerMvp } from '../lib/opencv/classifyPieces';
 import { VisionWorkerClient, type VisionPipeline } from '../lib/vision/visionWorkerClient';
 import { frameQualityToStatus, guidanceFromFrameQuality, type FrameQuality } from '../lib/vision/quality';
+import { pointInPolygon } from '../lib/overlay/geometry';
+import { computeFitTransform, mapViewportToSourcePoint } from '../lib/overlay/coordinates';
 
 type CameraStatus = 'idle' | 'starting' | 'live' | 'captured' | 'error';
 
@@ -66,21 +68,6 @@ function safeGet2DContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D |
     // jsdom does not implement canvas; treat as unavailable in tests.
     return null;
   }
-}
-
-function pointInPolygon(x: number, y: number, poly: { x: number; y: number }[]): boolean {
-  // Ray-casting algorithm
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const xi = poly[i].x,
-      yi = poly[i].y;
-    const xj = poly[j].x,
-      yj = poly[j].y;
-
-    const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 0.0000001) + xi;
-    if (intersect) inside = !inside;
-  }
-  return inside;
 }
 
 
@@ -212,9 +199,7 @@ function useOverlayCanvas(
 
 // Draw piece contours, mapped from source frame to viewport coordinates.
 if (opts.showContours && pieces && pieces.length > 0 && sourceSize && sourceSize.w > 0 && sourceSize.h > 0) {
-  const scale = Math.min(w / sourceSize.w, h / sourceSize.h);
-  const offX = (w - sourceSize.w * scale) / 2;
-  const offY = (h - sourceSize.h * scale) / 2;
+  const { scale, offX, offY } = computeFitTransform(w, h, sourceSize.w, sourceSize.h);
 
   ctx.globalAlpha = Math.max(0, Math.min(1, opts.opacity));
   ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
@@ -500,12 +485,9 @@ const handleOverlayPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
 
   const w = rect.width;
   const h = rect.height;
-  const scale = Math.min(w / sourceSize.w, h / sourceSize.h);
-  const offX = (w - sourceSize.w * scale) / 2;
-  const offY = (h - sourceSize.h * scale) / 2;
+  const t = computeFitTransform(w, h, sourceSize.w, sourceSize.h);
 
-  const sx = (x - offX) / scale;
-  const sy = (y - offY) / scale;
+  const { x: sx, y: sy } = mapViewportToSourcePoint(x, y, t);
 
   // Find the smallest piece that contains the point.
   let best: PieceCandidate | null = null;
