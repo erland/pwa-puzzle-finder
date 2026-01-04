@@ -1,9 +1,9 @@
 export function CameraIntroCard() {
   return (
     <div className="card">
-      <h2>Camera</h2>
+      <h2>Scan puzzle pieces</h2>
       <p className="muted">
-        Step 3 implementation: live camera stream + canvas overlay + OpenCV "Hello" frame processor (edges preview).
+        Point your camera at puzzle pieces on a flat surface. For best results, use even lighting and keep pieces separated.
       </p>
     </div>
   );

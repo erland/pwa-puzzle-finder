@@ -1,5 +1,4 @@
-import { HashRouter, NavLink, Route, Routes } from 'react-router-dom';
-import HomePage from './pages/HomePage';
+import { HashRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import HelpPage from './pages/HelpPage';
 import CameraPage from './pages/CameraPage';
 
@@ -8,12 +7,10 @@ function TopNav() {
     <div className="header">
       <div className="brand">
         <h1>Puzzle Finder</h1>
-        <span className="badge">v1 MVP scaffold</span>
       </div>
 
       <nav className="nav" aria-label="Primary navigation">
-        <NavLink to="/" className={({ isActive }) => `navLink${isActive ? ' navLinkActive' : ''}`}>Home</NavLink>
-        <NavLink to="/camera" className={({ isActive }) => `navLink${isActive ? ' navLinkActive' : ''}`}>Camera</NavLink>
+        <NavLink to="/" className={({ isActive }) => `navLink${isActive ? ' navLinkActive' : ''}`}>Scan</NavLink>
         <NavLink to="/help" className={({ isActive }) => `navLink${isActive ? ' navLinkActive' : ''}`}>Help</NavLink>
       </nav>
     </div>
@@ -31,10 +28,15 @@ export default function App() {
       <div className="container">
         <TopNav />
         <Routes>
-          <Route path="/" element={<HomePage />} />
-          <Route path="/camera" element={<CameraPage />} />
+          {/* v1: camera scanning is the primary entry point */}
+          <Route path="/" element={<CameraPage />} />
+
+          {/* Keep legacy route working for older links/bookmarks */}
+          <Route path="/camera" element={<Navigate to="/" replace />} />
           <Route path="/help" element={<HelpPage />} />
-          <Route path="*" element={<HomePage />} />
+
+          {/* Unknown routes return to the main scan experience */}
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </div>
     </HashRouter>

@@ -27,10 +27,11 @@ describe('App routes (smoke)', () => {
     });
   });
 
-  it('renders Home route', () => {
+  it('renders Scan (/) route', () => {
     window.location.hash = '#/';
     render(<App />);
-    expect(screen.getByText(/mvp scope/i)).toBeInTheDocument();
+    // CameraPage is the primary entry in v1.
+    expect(screen.getByRole('button', { name: /start camera/i })).toBeInTheDocument();
   });
 
   it('renders Help route', () => {
