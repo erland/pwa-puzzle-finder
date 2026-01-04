@@ -13,7 +13,8 @@ import { drawOverlay } from '../lib/overlay/drawOverlay';
 import { useCameraStream } from '../hooks/useCameraStream';
 import { useVisionTick } from '../hooks/useVisionTick';
 import { CameraControlsCard, CameraIntroCard, CameraViewport, V1Controls } from '../components/camera';
-import type { V1Sensitivity } from '../components/camera/V1Controls';
+import type { PieceClass } from '../lib/vision/scanModel';
+import { v1SensitivityToParams, type V1Sensitivity } from '../lib/vision/v1Sensitivity';
 import {
   cameraPageReducer,
   createInitialCameraPageState,
@@ -67,7 +68,7 @@ function useOverlayCanvas(
   pieces?: PieceCandidate[],
   sourceSize?: { w: number; h: number },
   selectedPieceId?: number | null,
-  classById?: Map<number, 'corner' | 'edge' | 'interior'>,
+  classById?: Map<number, PieceClass>,
   options?: OverlayOptions
 ) {
   const rafRef = useRef<number | null>(null);
@@ -323,31 +324,14 @@ export default function CameraPage() {
 
 
   const applyV1SensitivityPreset = (level: V1Sensitivity) => {
-    // A single user-facing control maps to a small set of internal thresholds.
-    // Defaults (medium) match the existing tuned values in createInitialCameraPageState.
-    if (level === 'low') {
-      setCannyLow(80);
-      setCannyHigh(160);
-      setMinAreaRatio(0.0020);
-      setMorphKernel(5);
-      setFilterMinSolidity(0.85);
-      setFilterMaxAspect(3.5);
-    } else if (level === 'high') {
-      setCannyLow(40);
-      setCannyHigh(80);
-      setMinAreaRatio(0.0010);
-      setMorphKernel(7);
-      setFilterMinSolidity(0.75);
-      setFilterMaxAspect(5.0);
-    } else {
-      // medium
-      setCannyLow(60);
-      setCannyHigh(120);
-      setMinAreaRatio(0.0015);
-      setMorphKernel(5);
-      setFilterMinSolidity(0.8);
-      setFilterMaxAspect(4.0);
-    }
+    // Single user-facing control → stable internal thresholds (pure + unit tested).
+    const p = v1SensitivityToParams(level);
+    setCannyLow(p.cannyLow);
+    setCannyHigh(p.cannyHigh);
+    setMinAreaRatio(p.minAreaRatio);
+    setMorphKernel(p.morphKernelSize);
+    setFilterMinSolidity(p.minSolidity);
+    setFilterMaxAspect(p.maxAspectRatio);
   };
 
   useEffect(() => {
@@ -370,7 +354,7 @@ export default function CameraPage() {
   }, [isDebug, v1ShowNonEdge, status, extractedPieces]);
 
   const classById = useMemo(() => {
-    const m = new Map<number, 'corner' | 'edge' | 'interior'>();
+    const m = new Map<number, PieceClass>();
     for (const p of extractedPieces) {
       if (p.classification) m.set(p.id, p.classification);
     }
@@ -422,11 +406,12 @@ useEffect(() => {
 }, [cannyHigh]);
 
 const overlayPieces: PieceCandidate[] = useMemo(() => {
-  const allowClass = (cls: 'corner' | 'edge' | 'interior' | undefined) => {
+  const allowClass = (cls: PieceClass | undefined) => {
     if (!cls) return true;
     if (cls === 'corner') return v1ShowCorners;
     if (cls === 'edge') return v1ShowEdges;
-    return v1ShowNonEdge; // interior/non-edge
+    // nonEdge + unknown are treated as "Non-edge" in v1.
+    return v1ShowNonEdge;
   };
 
   // In v1 mode, prefer extracted pieces (so we can filter by corner/edge) when available.
@@ -563,6 +548,8 @@ useVisionTick({
 
   minAreaRatio,
   morphKernel,
+  cannyLow,
+  cannyHigh,
   filterBorderMargin,
   filterPadding,
   filterMinSolidity,
@@ -852,7 +839,11 @@ const classifyPiecesNowWithResult = async (piecesOverride?: ExtractedPiece[]): P
     const { pieces, debug } = classifyEdgeCornerMvp({
       cv,
       processedFrameCanvas: inputCanvas,
-      pieces: piecesToClassify
+      pieces: piecesToClassify,
+      options: {
+        cannyLow,
+        cannyHigh
+      }
     });
 
     setExtractedPieces(pieces);

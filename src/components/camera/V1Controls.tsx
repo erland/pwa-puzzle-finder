@@ -1,6 +1,5 @@
 import type { CameraStatus } from '../../types/overlay';
-
-export type V1Sensitivity = 'low' | 'medium' | 'high';
+import type { V1Sensitivity } from '../../lib/vision/v1Sensitivity';
 
 export type V1ControlsProps = {
   status: CameraStatus;

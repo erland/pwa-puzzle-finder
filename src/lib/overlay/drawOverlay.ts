@@ -1,8 +1,7 @@
 import type { PieceCandidate } from '../opencv/segmentPieces';
 import type { CameraStatus, OverlayOptions } from '../../types/overlay';
 import { computeFitTransform } from './coordinates';
-
-export type PieceClassification = 'corner' | 'edge' | 'interior';
+import type { PieceClass } from '../vision/scanModel';
 
 export type DrawOverlayInput = {
   width: number;
@@ -12,7 +11,7 @@ export type DrawOverlayInput = {
   pieces?: PieceCandidate[];
   sourceSize?: { w: number; h: number };
   selectedPieceId?: number | null;
-  classById?: Map<number, PieceClassification>;
+  classById?: Map<number, PieceClass>;
   options: OverlayOptions;
 };
 
@@ -130,7 +129,9 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, input: DrawOverlayInp
           ? '#ff5566'
           : cls === 'edge'
             ? '#33aaff'
-            : '#00ff66'
+            : cls === 'unknown'
+              ? '#cccccc'
+              : '#00ff66'
         : '#00ff66';
   
       ctx.strokeStyle = isSelected ? '#ffcc00' : baseColor;

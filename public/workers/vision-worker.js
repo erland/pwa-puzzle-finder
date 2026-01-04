@@ -448,6 +448,9 @@ function classifyEdgeCornerMvpCore(cv, imageData, pieces, options) {
   const angleTol = options?.angleToleranceDeg ?? 20;
   const minLenRatio = options?.minLineLengthRatio ?? 0.35;
   const houghThreshold = options?.houghThreshold ?? 30;
+  const cannyLow = options?.cannyLow ?? 60;
+  const cannyHigh = options?.cannyHigh ?? 120;
+  const uncertainMarginRatio = options?.uncertainMarginRatio ?? 0.10;
 
   // We operate in processed coordinates.
   const procW = imageData.width;
@@ -458,7 +461,7 @@ function classifyEdgeCornerMvpCore(cv, imageData, pieces, options) {
   const edges = new cv.Mat();
   const lines = new cv.Mat();
 
-  let corners = 0, edgesCount = 0, interiors = 0;
+  let corners = 0, edgesCount = 0, nonEdges = 0, unknowns = 0;
 
   try {
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
@@ -470,8 +473,8 @@ function classifyEdgeCornerMvpCore(cv, imageData, pieces, options) {
       const rw = Math.min(procW - rx, Math.floor(roi.width));
       const rh = Math.min(procH - ry, Math.floor(roi.height));
       if (rw <= 5 || rh <= 5) {
-        interiors++;
-        return { ...p, classification: 'interior', classificationDebug: 'ROI too small.' };
+        unknowns++;
+        return { ...p, classification: 'unknown', classificationConfidence: 0, classificationDebug: 'ROI too small.' };
       }
 
       // Crop ROI
@@ -479,10 +482,11 @@ function classifyEdgeCornerMvpCore(cv, imageData, pieces, options) {
       const grayRoi = gray.roi(rect);
 
       try {
-        cv.Canny(grayRoi, edges, 60, 120, 3, false);
+        cv.Canny(grayRoi, edges, cannyLow, cannyHigh, 3, false);
 
         // Hough lines on edges
-        cv.HoughLinesP(edges, lines, 1, Math.PI / 180, houghThreshold, Math.round(Math.min(rw, rh) * minLenRatio), 10);
+        const minLineLen = Math.round(Math.min(rw, rh) * minLenRatio);
+        cv.HoughLinesP(edges, lines, 1, Math.PI / 180, houghThreshold, minLineLen, 10);
 
         let bestH = 0;
         let bestV = 0;
@@ -495,7 +499,7 @@ function classifyEdgeCornerMvpCore(cv, imageData, pieces, options) {
           const dx = x2 - x1;
           const dy = y2 - y1;
           const len = Math.hypot(dx, dy);
-          if (len < Math.min(rw, rh) * minLenRatio) continue;
+          if (len < minLineLen) continue;
 
           const ang = Math.abs((Math.atan2(dy, dx) * 180) / Math.PI);
           // Normalize to [0,90]
@@ -514,20 +518,53 @@ function classifyEdgeCornerMvpCore(cv, imageData, pieces, options) {
           if (nearV && (nearLeft || nearRight)) bestV = Math.max(bestV, len);
         }
 
-        const hasH = bestH >= Math.min(rw, rh) * minLenRatio;
-        const hasV = bestV >= Math.min(rw, rh) * minLenRatio;
+        const hasH = bestH >= minLineLen;
+        const hasV = bestV >= minLineLen;
 
-        let cls = 'interior';
-        if (hasH && hasV) cls = 'corner';
-        else if (hasH || hasV) cls = 'edge';
+        // Convert evidence into a conservative classification.
+        const maxDim = Math.max(rw, rh);
+        const hRatio = maxDim > 0 ? bestH / maxDim : 0;
+        const vRatio = maxDim > 0 ? bestV / maxDim : 0;
+        const bestRatio = Math.max(hRatio, vRatio);
+
+        const sideConf = (ratio) => {
+          if (ratio <= 0) return 0;
+          const denom = Math.max(1e-6, 1 - minLenRatio);
+          return clamp01((ratio - minLenRatio) / denom);
+        };
+
+        const hConf = hasH ? sideConf(hRatio) : 0;
+        const vConf = hasV ? sideConf(vRatio) : 0;
+
+        let cls = 'nonEdge';
+        let conf = 0.7;
+
+        if (hasH && hasV) {
+          cls = 'corner';
+          conf = Math.min(hConf, vConf);
+        } else if (hasH || hasV) {
+          cls = 'edge';
+          conf = Math.max(hConf, vConf);
+        } else {
+          cls = 'nonEdge';
+          conf = 0.7;
+        }
+
+        const borderline = bestRatio > 0 && bestRatio < minLenRatio * (1 + uncertainMarginRatio);
+        if ((cls === 'corner' || cls === 'edge') && borderline) {
+          cls = 'unknown';
+          conf = Math.max(0.05, Math.min(0.25, conf));
+        }
 
         if (cls === 'corner') corners++;
         else if (cls === 'edge') edgesCount++;
-        else interiors++;
+        else if (cls === 'nonEdge') nonEdges++;
+        else unknowns++;
 
         return {
           ...p,
           classification: cls,
+          classificationConfidence: conf,
           classificationDebug: `H:${hasH ? 'Y' : 'N'}(${bestH.toFixed(0)}) V:${hasV ? 'Y' : 'N'}(${bestV.toFixed(0)})`
         };
       } finally {
@@ -537,7 +574,7 @@ function classifyEdgeCornerMvpCore(cv, imageData, pieces, options) {
       }
     });
 
-    return { pieces: updated, debug: `Corners: ${corners}, Edges: ${edgesCount}, Interiors: ${interiors}` };
+    return { pieces: updated, debug: `Corners: ${corners}, Edges: ${edgesCount}, Non-edge: ${nonEdges}, Unknown: ${unknowns}` };
   } finally {
     src.delete();
     gray.delete();

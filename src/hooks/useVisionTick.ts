@@ -49,6 +49,8 @@ export interface UseVisionTickParams {
   // Vision parameters
   minAreaRatio: number;
   morphKernel: number;
+  cannyLow: number;
+  cannyHigh: number;
   filterBorderMargin: number;
   filterPadding: number;
   filterMinSolidity: number;
@@ -102,6 +104,8 @@ export function useVisionTick(params: UseVisionTickParams) {
     workerStatus,
     minAreaRatio,
     morphKernel,
+    cannyLow,
+    cannyHigh,
     filterBorderMargin,
     filterPadding,
     filterMinSolidity,
@@ -214,6 +218,12 @@ width: pw,
             minSolidity: filterMinSolidity,
             maxAspectRatio: filterMaxAspect,
             maxPieces: filterMaxPieces
+          },
+          classifyOptions: {
+            cannyLow,
+            cannyHigh,
+            // Conservative unknown bucket when close to the minimum edge threshold.
+            uncertainMarginRatio: 0.10
           }
         } as any);
 
@@ -327,7 +337,11 @@ width: pw,
           const classified = classifyEdgeCornerMvp({
             cv,
             processedFrameCanvas: inputCanvas,
-            pieces
+            pieces,
+            options: {
+              cannyLow,
+              cannyHigh
+            }
           });
           setExtractedPieces(classified.pieces);
           setClassifyDebug(classified.debug);

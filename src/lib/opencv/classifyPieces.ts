@@ -1,13 +1,16 @@
 import type { OpenCvModule } from './loadOpenCV';
 import type { ExtractedPiece } from './extractPieces';
-
-export type PieceClassification = 'corner' | 'edge' | 'interior';
+import type { PieceClass } from '../vision/scanModel';
 
 export type ClassifyPiecesOptions = {
   borderTolerancePx?: number;
   angleToleranceDeg?: number;
   minLineLengthRatio?: number;
   houghThreshold?: number;
+  cannyLow?: number;
+  cannyHigh?: number;
+  /** If the best detected straight edge is too close to the minimum threshold, classify as unknown instead of corner/edge. */
+  uncertainMarginRatio?: number;
 };
 
 function deg(vRad: number) {
@@ -29,11 +32,12 @@ function isNear(val: number, target: number, tol: number) {
  * - Detect long, near-horizontal/near-vertical line segments on the OUTER BOUNDARY of the piece.
  * - 2 adjacent "straight" sides => corner.
  * - 1 straight side => edge.
- * - 0 straight sides => interior.
+ * - 0 straight sides => non-edge.
  *
  * Notes:
  * - This is a heuristic that works best when pieces are separated and on a contrasting background.
  * - The result is intended to be "good enough" for MVP; later steps can improve robustness.
+ * - Conservative rule (FR-8): uncertain edge/corner cases are labeled as `unknown`.
  */
 export function classifyEdgeCornerMvp(params: {
   cv: OpenCvModule;
@@ -47,18 +51,27 @@ export function classifyEdgeCornerMvp(params: {
   const angleTol = options?.angleToleranceDeg ?? 20;
   const minLenRatio = options?.minLineLengthRatio ?? 0.35;
   const houghThreshold = options?.houghThreshold ?? 30;
+  const cannyLow = options?.cannyLow ?? 50;
+  const cannyHigh = options?.cannyHigh ?? 100;
+  const uncertainMarginRatio = options?.uncertainMarginRatio ?? 0.10;
 
   const ctx2d = processedFrameCanvas.getContext('2d');
   if (!ctx2d) {
     return {
-      pieces: pieces.map((p) => ({ ...p, classification: 'interior', classificationDebug: 'No 2D context.' })),
+      pieces: pieces.map((p) => ({
+        ...p,
+        classification: 'unknown',
+        classificationConfidence: 0,
+        classificationDebug: 'No 2D context.'
+      })),
       debug: 'No 2D context.'
     };
   }
 
   let corners = 0;
   let edges = 0;
-  let interiors = 0;
+  let nonEdges = 0;
+  let unknowns = 0;
 
   const updated: ExtractedPiece[] = [];
 
@@ -71,8 +84,8 @@ export function classifyEdgeCornerMvp(params: {
 
     const contour = p.contourProcessed ?? [];
     if (contour.length < 3) {
-      updated.push({ ...p, classification: 'interior', classificationDebug: 'Missing contour.' });
-      interiors++;
+      updated.push({ ...p, classification: 'unknown', classificationConfidence: 0, classificationDebug: 'Missing contour.' });
+      unknowns++;
       continue;
     }
 
@@ -100,7 +113,7 @@ export function classifyEdgeCornerMvp(params: {
     cv.morphologyEx(mask, boundary, cv.MORPH_GRADIENT, kernel);
 
     const edgesMat = new cv.Mat();
-    cv.Canny(masked, edgesMat, 50, 100);
+    cv.Canny(masked, edgesMat, cannyLow, cannyHigh);
 
     const boundaryEdges = new cv.Mat();
     cv.bitwise_and(edgesMat, edgesMat, boundaryEdges, boundary);
@@ -151,13 +164,49 @@ export function classifyEdgeCornerMvp(params: {
       }
     }
 
-    let classification: PieceClassification = 'interior';
-    if (hasHorizontal && hasVertical) classification = 'corner';
-    else if (hasHorizontal || hasVertical) classification = 'edge';
+    // Convert straight-edge evidence into a conservative classification.
+    const maxDim = Math.max(w, h);
+    const hRatio = maxDim > 0 ? bestHLen / maxDim : 0;
+    const vRatio = maxDim > 0 ? bestVLen / maxDim : 0;
+    const bestRatio = Math.max(hRatio, vRatio);
+
+    const sideConf = (ratio: number) => {
+      if (ratio <= 0) return 0;
+      // 0 at threshold, -> 1 when ratio approaches 1
+      const denom = Math.max(1e-6, 1 - minLenRatio);
+      return Math.max(0, Math.min(1, (ratio - minLenRatio) / denom));
+    };
+
+    const hConf = hasHorizontal ? sideConf(hRatio) : 0;
+    const vConf = hasVertical ? sideConf(vRatio) : 0;
+
+    let classification: PieceClass = 'nonEdge';
+    let confidence = 0.7;
+
+    if (hasHorizontal && hasVertical) {
+      classification = 'corner';
+      confidence = Math.min(hConf, vConf);
+    } else if (hasHorizontal || hasVertical) {
+      classification = 'edge';
+      confidence = Math.max(hConf, vConf);
+    } else {
+      classification = 'nonEdge';
+      confidence = 0.7;
+    }
+
+    // Conservative rule (FR-8): if we are too close to the minimum straight-edge threshold,
+    // mark as unknown instead of claiming corner/edge.
+    const borderline = bestRatio > 0 && bestRatio < minLenRatio * (1 + uncertainMarginRatio);
+    if ((classification === 'corner' || classification === 'edge') && borderline) {
+      classification = 'unknown';
+      // Keep a low confidence so UI can communicate uncertainty later.
+      confidence = Math.max(0.05, Math.min(0.25, confidence));
+    }
 
     if (classification === 'corner') corners++;
     else if (classification === 'edge') edges++;
-    else interiors++;
+    else if (classification === 'nonEdge') nonEdges++;
+    else unknowns++;
 
     const debug = [
       `roi=${w}x${h}`,
@@ -166,7 +215,7 @@ export function classifyEdgeCornerMvp(params: {
       `V=${hasVertical ? 'yes' : 'no'}(${Math.round(bestVLen)}px)`
     ].join(' · ');
 
-    updated.push({ ...p, classification, classificationDebug: debug });
+    updated.push({ ...p, classification, classificationConfidence: confidence, classificationDebug: debug });
 
     // cleanup
     rgba.delete();
@@ -182,5 +231,8 @@ export function classifyEdgeCornerMvp(params: {
     lines.delete();
   }
 
-  return { pieces: updated, debug: `Classified: ${updated.length} (corner ${corners}, edge ${edges}, interior ${interiors})` };
+  return {
+    pieces: updated,
+    debug: `Classified: ${updated.length} (corner ${corners}, edge ${edges}, non-edge ${nonEdges}, unknown ${unknowns})`
+  };
 }

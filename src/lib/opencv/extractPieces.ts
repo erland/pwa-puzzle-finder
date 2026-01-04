@@ -1,5 +1,6 @@
 import type { OpenCvModule } from './loadOpenCV';
 import type { SegmentPiecesResult } from './segmentPieces';
+import type { PieceClass } from '../vision/scanModel';
 
 export type ExtractPiecesOptions = {
   /** Exclude candidates whose bounding box touches the processed frame border within this margin (px). */
@@ -27,8 +28,10 @@ export type ExtractedPiece = {
   contourSource: Array<{ x: number; y: number }>;
   /** Contour points in PROCESSED coordinates (downscaled processing frame). */
   contourProcessed: Array<{ x: number; y: number }>;
-  /** Optional rule-based classification result (Step 6). */
-  classification?: 'corner' | 'edge' | 'interior';
+  /** Optional rule-based classification result (v1). */
+  classification?: PieceClass;
+  /** Optional 0..1 confidence (heuristic). */
+  classificationConfidence?: number;
   classificationDebug?: string;
 };
 
