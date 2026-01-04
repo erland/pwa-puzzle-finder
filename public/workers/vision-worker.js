@@ -569,8 +569,10 @@ function classifyEdgeCornerMvpCore(cv, imageData, pieces, options) {
         };
       } finally {
         grayRoi.delete();
-        lines.delete(); // reset lines mat each piece
-        lines.create(0,0,cv.CV_32SC4);
+        // NOTE: Don't call lines.delete() inside the loop.
+        // In OpenCV.js, once a Mat is deleted the JS wrapper becomes invalid and can't be reused.
+        // Reset the output mat to empty for the next iteration instead.
+        lines.create(0, 0, cv.CV_32SC4);
       }
     });
 
