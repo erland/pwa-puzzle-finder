@@ -159,6 +159,7 @@ export default function CameraPage() {
   const camera = useCameraStream();
   const videoRef = camera.videoRef;
   const status = camera.status;
+  const errorKind = camera.errorKind;
   const errorMessage = camera.errorMessage;
   const streamInfo = camera.streamInfo;
   const sourceSize = camera.sourceSize;
@@ -1199,6 +1200,8 @@ const classifyPiecesNow = async (): Promise<void> => {
 
       <V1Controls
         status={status}
+        errorKind={errorKind}
+        errorMessage={errorMessage}
         streamInfo={streamInfo ?? ''}
         onStartCamera={() => void startCamera()}
         onStopCamera={stopCamera}

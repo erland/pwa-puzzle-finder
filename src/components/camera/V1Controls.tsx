@@ -1,10 +1,13 @@
 import type { CameraStatus } from '../../types/overlay';
+import type { CameraErrorKind } from '../../hooks/useCameraStream';
 import type { V1Sensitivity } from '../../lib/vision/v1Sensitivity';
 import type { ScanCounts } from '../../lib/vision/scanModel';
 import type { FrameQualityGuidanceItem, FrameQualityStatus, GuidanceLevel } from '../../lib/vision/quality';
 
 export type V1ControlsProps = {
   status: CameraStatus;
+  errorKind?: CameraErrorKind;
+  errorMessage?: string;
   streamInfo: string;
 
   // Core actions
@@ -69,6 +72,8 @@ function ToggleButton(props: { label: string; pressed: boolean; onToggle: () => 
 export function V1Controls(props: V1ControlsProps) {
   const {
     status,
+    errorKind,
+    errorMessage,
     streamInfo,
     onStartCamera,
     onStopCamera,
@@ -112,6 +117,28 @@ export function V1Controls(props: V1ControlsProps) {
             {isError ? 'Camera error' : isCaptured ? 'Captured frame' : isLive ? 'Live' : 'Camera off'}
           </div>
 
+          {(isIdle || isError) && (
+            <div className="muted" style={{ marginTop: 6, fontSize: 12, lineHeight: 1.35 }}>
+              {isError ? (
+                <>
+                  {errorMessage ?? 'An unexpected camera error occurred.'}
+                  {errorKind === 'permission_denied' && (
+                    <div style={{ marginTop: 6, opacity: 0.92 }}>
+                      Tip: Open your browser/site settings for this page and set <strong>Camera</strong> to <strong>Allow</strong>.
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  When you tap <strong>Start camera</strong>, your browser will ask for permission. Video is processed locally on your device — nothing is uploaded.
+                  <span style={{ marginLeft: 6 }}>
+                    <a href="#/help">Learn more</a>
+                  </span>
+                </>
+              )}
+            </div>
+          )}
+
           {counts && counts.total.total > 0 && (
             <div style={{ marginTop: 6, fontSize: 12, opacity: 0.92 }} aria-label="Scan counts">
               <span style={{ fontWeight: 700 }}>Corners:</span> {counts.total.corners}
@@ -133,7 +160,7 @@ export function V1Controls(props: V1ControlsProps) {
         <div className="row" style={{ gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           {(isIdle || isError) && (
             <button type="button" className="btn btnPrimary" onClick={onStartCamera} disabled={busy}>
-              Start camera
+              {isError ? 'Try again' : 'Start camera'}
             </button>
           )}
           {isLive && (

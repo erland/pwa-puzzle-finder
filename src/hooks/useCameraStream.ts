@@ -3,6 +3,15 @@ import type { CameraStatus } from '../types/overlay';
 
 export type SourceSize = { w: number; h: number };
 
+export type CameraErrorKind =
+  | 'none'
+  | 'permission_denied'
+  | 'not_supported'
+  | 'no_camera'
+  | 'in_use'
+  | 'constraints'
+  | 'unknown';
+
 function getMediaDevices(): MediaDevices | null {
   // Some environments (tests) may not define navigator.mediaDevices.
   const md = (navigator as unknown as { mediaDevices?: MediaDevices }).mediaDevices;
@@ -14,6 +23,51 @@ function formatError(err: unknown): string {
   if (typeof err === 'string') return err;
   if (err instanceof Error) return err.message || 'Unknown error';
   return 'Unknown error';
+}
+
+function classifyGetUserMediaError(err: unknown): { kind: CameraErrorKind; message: string } {
+  // DOMException.name is the most reliable signal across browsers.
+  const anyErr = err as any;
+  const name: string | undefined = anyErr?.name;
+  const msg = formatError(err);
+
+  const lowerName = (name ?? '').toLowerCase();
+
+  if (lowerName.includes('notallowed') || lowerName.includes('security')) {
+    return {
+      kind: 'permission_denied',
+      message:
+        'Camera permission was denied. Please allow camera access for this site in your browser settings, then try again.'
+    };
+  }
+
+  if (lowerName.includes('notfound') || lowerName.includes('devicesnotfound')) {
+    return {
+      kind: 'no_camera',
+      message: 'No camera was found on this device.'
+    };
+  }
+
+  if (lowerName.includes('notreadable') || lowerName.includes('trackstarterror')) {
+    return {
+      kind: 'in_use',
+      message: 'The camera could not be started (it may already be in use by another app). Close other apps and try again.'
+    };
+  }
+
+  if (lowerName.includes('overconstrained') || lowerName.includes('constraintnotsatisfied')) {
+    return {
+      kind: 'constraints',
+      message: 'The camera could not satisfy the requested constraints. Try a different camera or lower resolution.'
+    };
+  }
+
+  // Fallback: if the message strongly hints permission denial.
+  if (msg.toLowerCase().includes('denied') || msg.toLowerCase().includes('permission')) {
+    return { kind: 'permission_denied', message: msg };
+  }
+
+  return { kind: 'unknown', message: msg };
 }
 
 function safeGet2DContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D | null {
@@ -28,6 +82,7 @@ function safeGet2DContext(canvas: HTMLCanvasElement): CanvasRenderingContext2D |
 export type UseCameraStreamResult = {
   videoRef: RefObject<HTMLVideoElement>;
   status: CameraStatus;
+  errorKind: CameraErrorKind;
   errorMessage: string;
   streamInfo: string;
   sourceSize: SourceSize;
@@ -43,6 +98,7 @@ export function useCameraStream(): UseCameraStreamResult {
   const streamRef = useRef<MediaStream | null>(null);
 
   const [status, setStatus] = useState<CameraStatus>('idle');
+  const [errorKind, setErrorKind] = useState<CameraErrorKind>('none');
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [streamInfo, setStreamInfo] = useState<string>('');
   const [sourceSize, setSourceSize] = useState<SourceSize>({ w: 0, h: 0 });
@@ -61,9 +117,11 @@ export function useCameraStream(): UseCameraStreamResult {
   const startCamera = useCallback(async () => {
     const mediaDevices = getMediaDevices();
     setErrorMessage('');
+    setErrorKind('none');
 
     if (!mediaDevices?.getUserMedia) {
       setStatus('error');
+      setErrorKind('not_supported');
       setErrorMessage('Camera access is not supported in this environment.');
       return;
     }
@@ -109,8 +167,10 @@ export function useCameraStream(): UseCameraStreamResult {
       setStatus('live');
     } catch (err) {
       stopStream();
+      const info = classifyGetUserMediaError(err);
       setStatus('error');
-      setErrorMessage(formatError(err));
+      setErrorKind(info.kind);
+      setErrorMessage(info.message);
     }
   }, [stopStream]);
 
@@ -151,6 +211,7 @@ export function useCameraStream(): UseCameraStreamResult {
       setStatus('live');
     } catch (err) {
       setStatus('error');
+      setErrorKind('unknown');
       setErrorMessage(formatError(err));
     }
   }, []);
@@ -161,5 +222,5 @@ export function useCameraStream(): UseCameraStreamResult {
     };
   }, [stopStream]);
 
-  return { videoRef, status, errorMessage, streamInfo, sourceSize, startCamera, stopStream, stopCamera, captureFrame, backToLive };
+  return { videoRef, status, errorKind, errorMessage, streamInfo, sourceSize, startCamera, stopStream, stopCamera, captureFrame, backToLive };
 }

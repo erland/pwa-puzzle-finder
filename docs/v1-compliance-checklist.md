@@ -17,7 +17,7 @@ Last updated: 2026-01-04
 | ID | Requirement | Status | Evidence / notes |
 |---|---|---:|---|
 | FR-1 | Provide a camera view for scanning | ✅ | `src/pages/CameraPage.tsx`, `src/hooks/useCameraStream.ts` |
-| FR-2 | Request camera permission and explain why | 🟡 | Permission request exists, but explanation UX is minimal. `src/pages/CameraPage.tsx` |
+| FR-2 | Request camera permission and explain why | ✅ | Explained in `CameraIntroCard` + `V1Controls`. Errors mapped to friendly messages in `useCameraStream.ts`. |
 | FR-3 | Overlay layer aligned with camera view | ✅ | Overlay utilities: `src/lib/overlay/*`, rendered via `CameraViewport` |
 | FR-4 | “Capture frame” option to freeze and inspect | ✅ | `CameraPage` has “Capture frame” + captured state |
 | FR-5 | Detect individual puzzle pieces | 🟡 | Segmentation/extraction pipeline exists; needs v1 UX integration. `src/lib/opencv/*` |
