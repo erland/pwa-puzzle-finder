@@ -309,18 +309,23 @@ export default function CameraPage() {
   const [v1ShowNonEdge, setV1ShowNonEdge] = useState(false);
   const [v1Sensitivity, setV1Sensitivity] = useState<V1Sensitivity>('medium');
 
+  // Processing presets
+  const LIVE_TARGET_WIDTH = 640;
+  const CAPTURE_TARGET_WIDTH = 1024;
+
   // v1 mode should "just work" without requiring debug toggles.
   // We keep these settings user-configurable in debug mode, but in v1 mode
-  // we enable near-real-time processing by default.
+  // we enable near-real-time processing by default (only while in live camera mode).
   useEffect(() => {
     if (isDebug) return;
     // Enable live processing and run the full pipeline so the v1 toggles have effect.
-    setLiveModeEnabled(true);
+    // In captured review mode we freeze results (single high-quality capture pass).
+    setLiveModeEnabled(status === 'live');
     setLivePipeline('classify');
     // Prefer extracted/classified pieces for overlay.
     setOverlaySource('extracted');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDebug]);
+  }, [isDebug, status]);
 
 
   const applyV1SensitivityPreset = (level: V1Sensitivity) => {
@@ -531,6 +536,7 @@ useVisionTick({
   enabled: liveModeEnabled,
   liveFps,
   livePipeline,
+  liveTargetWidth: LIVE_TARGET_WIDTH,
   cameraStatus: status,
 
   videoRef,
@@ -865,30 +871,209 @@ const classifyPiecesNow = async (): Promise<void> => {
 
 
   
+  const captureSeqRef = useRef(0);
+
+  const runHighQualityCapturePass = async (): Promise<
+    | { segCount: number; classifiedPieces: ExtractedPiece[] }
+    | null
+  > => {
+    // Last-request-wins semantics for rapid repeated captures.
+    captureSeqRef.current += 1;
+    const mySeq = captureSeqRef.current;
+
+    try {
+      setSegError('');
+      setSegDebug('');
+      setExtractError('');
+      setExtractDebug('');
+      setClassifyDebug('');
+      setSegStatus('running');
+      setExtractStatus('idle');
+      setIsProcessing(true);
+
+      const still = stillCanvasRef.current;
+      const inputCanvas = processingInputCanvasRef.current;
+      const outputCanvas = processedCanvasRef.current;
+      if (!still || !inputCanvas || !outputCanvas) throw new Error('Missing capture/processing canvases.');
+
+      // Prefer worker for responsiveness.
+      if (useWorker) {
+        if (!workerClientRef.current) {
+          workerClientRef.current = new VisionWorkerClient(appBasePath);
+        }
+        const initRes = workerStatus === 'ready' ? { ok: true } : await workerClientRef.current.init();
+        if (!initRes.ok) throw new Error((initRes as any).error ?? 'Failed to init vision worker.');
+
+        const ctx = safeGet2DContext(inputCanvas);
+        if (!ctx) throw new Error('2D context not available.');
+
+        const sourceW = still.width;
+        const sourceH = still.height;
+        if (!sourceW || !sourceH) throw new Error('Captured frame not ready.');
+
+        const targetWidth = Math.min(CAPTURE_TARGET_WIDTH, sourceW);
+        const scale = targetWidth / sourceW;
+        const pw = Math.max(1, Math.round(sourceW * scale));
+        const ph = Math.max(1, Math.round(sourceH * scale));
+
+        inputCanvas.width = pw;
+        inputCanvas.height = ph;
+        ctx.drawImage(still, 0, 0, pw, ph);
+        const img = ctx.getImageData(0, 0, pw, ph);
+
+        const res = await workerClientRef.current.process({
+          pipeline: 'classify',
+          width: pw,
+          height: ph,
+          sourceWidth: sourceW,
+          sourceHeight: sourceH,
+          scaleToSource: sourceW / pw,
+          buffer: img.data.buffer,
+          segOptions: {
+            minAreaRatio,
+            blurKernelSize: 7,
+            morphKernelSize: morphKernel
+          },
+          extractOptions: {
+            borderMarginPx: filterBorderMargin,
+            paddingPx: filterPadding,
+            minSolidity: filterMinSolidity,
+            maxAspectRatio: filterMaxAspect,
+            maxPieces: filterMaxPieces
+          },
+          classifyOptions: {
+            cannyLow,
+            cannyHigh,
+            uncertainMarginRatio: 0.10
+          }
+        } as any);
+
+        // If a newer capture started while we were running, ignore this result.
+        if (captureSeqRef.current !== mySeq) return null;
+
+        const segCount = (res.segmentation?.pieces?.length ?? 0) as number;
+        const classifiedPieces = (res.classified?.pieces ?? []) as ExtractedPiece[];
+
+        setSegPieces((res.segmentation?.pieces ?? []) as any);
+        setSegResult((res.segmentation as any) ?? null);
+        setFrameQuality(((res.segmentation as any)?.quality ?? null) as any);
+        setSegStatus('done');
+
+        setExtractedPieces(classifiedPieces as any);
+        setExtractStatus('done');
+        setExtractDebug(res.extracted?.debug ?? '');
+        setClassifyDebug(res.classified?.debug ?? '');
+
+        // Clear preview canvas (worker does not render mask preview)
+        safeGet2DContext(outputCanvas)?.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
+
+        return { segCount, classifiedPieces };
+      } else {
+        const cv: OpenCvModule = await ensureOpenCvReady();
+
+        const seg = segmentPiecesFromFrame({
+          cv,
+          source: still,
+          inputCanvas,
+          outputCanvas,
+          options: {
+            targetWidth: CAPTURE_TARGET_WIDTH,
+            minAreaRatio,
+            morphKernelSize: morphKernel
+          }
+        });
+
+        if (captureSeqRef.current !== mySeq) return null;
+
+        setSegPieces(seg.pieces);
+        setSegResult(seg);
+        setFrameQuality(seg.quality ?? null);
+        setSegStatus('done');
+        setSegDebug(
+          [
+            `Segmentation: ${seg.pieces.length} piece(s)`,
+            `Contours: ${seg.debug.contoursFound}`,
+            `Proc: ${seg.debug.processedWidth}×${seg.debug.processedHeight}${seg.debug.inverted ? ' (inverted)' : ''}`
+          ].join('\n')
+        );
+
+        const { pieces, debug } = filterAndExtractPieces({
+          cv,
+          segmentation: seg,
+          processedFrameCanvas: inputCanvas,
+          options: {
+            borderMarginPx: filterBorderMargin,
+            paddingPx: filterPadding,
+            minSolidity: filterMinSolidity,
+            maxAspectRatio: filterMaxAspect,
+            maxPieces: filterMaxPieces
+          }
+        });
+
+        const classified = classifyEdgeCornerMvp({
+          cv,
+          processedFrameCanvas: inputCanvas,
+          pieces,
+          options: {
+            cannyLow,
+            cannyHigh
+          }
+        });
+
+        if (captureSeqRef.current !== mySeq) return null;
+
+        setExtractedPieces(classified.pieces);
+        setExtractStatus('done');
+        setExtractDebug(debug);
+        setClassifyDebug(classified.debug);
+
+        return { segCount: seg.pieces.length, classifiedPieces: classified.pieces };
+      }
+    } catch (e) {
+      if (captureSeqRef.current === mySeq) {
+        setSegStatus('error');
+        setSegError(`Capture analysis error: ${formatError(e)}`);
+      }
+      return null;
+    } finally {
+      if (captureSeqRef.current === mySeq) {
+        setIsProcessing(false);
+      }
+    }
+  };
+
   const captureAndAnalyze = async () => {
-    // v1: Capture the current frame and run a full analysis pass (segment → extract → classify).
-    camera.captureFrame(stillCanvasRef.current);
+    // v1: Freeze the frame and run a single high-quality pass.
     setOverlaySource('extracted');
-    const res = await extractPiecesNowWithResult();
+    camera.captureFrame(stillCanvasRef.current);
+    // Freeze live scanning while in captured review mode.
+    setLiveModeEnabled(false);
+
+    const res = await runHighQualityCapturePass();
     if (!res) return;
 
-    const classified = await classifyPiecesNowWithResult(res.pieces);
-    if (!classified || classified.length === 0) return;
-
-    // If we found pieces but none were classified as corner/edge, auto-enable Non-edge so the
-    // user doesn't end up with an empty overlay and think detection is broken.
-    const hasCorner = classified.some((p) => p.classification === 'corner');
-    const hasEdge = classified.some((p) => p.classification === 'edge');
-    if (!hasCorner && !hasEdge) {
+    // Auto-enable Non-edge if we found pieces but none classified as corner/edge.
+    const hasCorner = res.classifiedPieces.some((p) => p.classification === 'corner');
+    const hasEdge = res.classifiedPieces.some((p) => p.classification === 'edge');
+    if (!hasCorner && !hasEdge && res.segCount > 0) {
       setV1ShowNonEdge(true);
     }
   };
-const stopCamera = () => {
+
+  const stopCamera = () => {
     camera.stopCamera();
+    setLiveModeEnabled(false);
     setSegPieces([]);
     setSegStatus('idle');
     setSegError('');
     setSegDebug('');
+    setSegResult(null);
+    setFrameQuality(null);
+    setExtractedPieces([]);
+    setExtractStatus('idle');
+    setExtractError('');
+    setExtractDebug('');
+    setClassifyDebug('');
   };
 
   const qualityStatus = useMemo(() => frameQualityToStatus(frameQuality), [frameQuality]);

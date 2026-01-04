@@ -29,6 +29,11 @@ export interface UseVisionTickParams {
   enabled: boolean;
   liveFps: number;
   livePipeline: LivePipelineMode;
+  /**
+   * Downscale width used for live processing. Keep small to maintain responsiveness.
+   * Capture/review can run a separate, higher-quality pass.
+   */
+  liveTargetWidth?: number;
   cameraStatus: CameraStatus;
 
   videoRef: RefObject<HTMLVideoElement>;
@@ -91,6 +96,7 @@ export function useVisionTick(params: UseVisionTickParams) {
     enabled,
     liveFps,
     livePipeline,
+    liveTargetWidth,
     cameraStatus,
     videoRef,
     stillCanvasRef,
@@ -187,7 +193,7 @@ export function useVisionTick(params: UseVisionTickParams) {
         const sourceH = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
         if (!sourceW || !sourceH) throw new Error('Source dimensions not ready.');
 
-        const targetWidth = 640;
+        const targetWidth = liveTargetWidth ?? 640;
         const scale = targetWidth / sourceW;
         const pw = Math.max(1, Math.round(sourceW * scale));
         const ph = Math.max(1, Math.round(sourceH * scale));
@@ -200,8 +206,8 @@ export function useVisionTick(params: UseVisionTickParams) {
         const pipeline: VisionPipeline = livePipeline === 'segment' ? 'segment' : livePipeline === 'extract' ? 'extract' : 'classify';
 
         const res = await workerClientRef.current.process({
-          pipeline, 
-width: pw,
+          pipeline,
+          width: pw,
           height: ph,
           sourceWidth: sourceW,
           sourceHeight: sourceH,
@@ -279,13 +285,13 @@ width: pw,
       setSegError('');
       setSegDebug('');
 
-      const seg = segmentPiecesFromFrame({
+        const seg = segmentPiecesFromFrame({
         cv,
         source: source as any,
         inputCanvas,
         outputCanvas,
         options: {
-          targetWidth: 640,
+            targetWidth: liveTargetWidth ?? 640,
           minAreaRatio,
           morphKernelSize: morphKernel
         }
@@ -394,12 +400,15 @@ width: pw,
     enabled,
     liveFps,
     livePipeline,
+    liveTargetWidth,
     cameraStatus,
     useWorker,
     appBasePath,
     workerStatus,
     minAreaRatio,
     morphKernel,
+    cannyLow,
+    cannyHigh,
     filterBorderMargin,
     filterPadding,
     filterMinSolidity,

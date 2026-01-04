@@ -44,7 +44,7 @@ Last updated: 2026-01-04
 
 | ID | Requirement | Status | Evidence / notes |
 |---|---|---:|---|
-| NFR-1 | Live scanning feels responsive (throttle ok) | 🟡 | Throttled processing exists; verify UX polish in v1. `src/hooks/useVisionTick.ts` |
+| NFR-1 | Live scanning feels responsive (throttle ok) | 🟡 | Live loop is throttled + in-flight guarded. Capture uses a single higher-quality pass. `src/hooks/useVisionTick.ts`, `src/pages/CameraPage.tsx` |
 | NFR-2 | Avoid heating/battery drain | 🟡 | No explicit constraints; keep throttling and avoid heavy loops |
 | NFR-3 | Degrade gracefully on lower-performance devices | 🟡 | Worker pipeline exists; confirm fallback behavior. `src/lib/vision/*` |
 | NFR-4 | Clear error states (permission denied, unavailable, analysis failed) | 🟡 | Some errors shown; needs v1-friendly copy + recovery actions |
