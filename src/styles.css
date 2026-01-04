@@ -221,6 +221,18 @@ input[type="range"]:disabled { opacity: 0.6; }
   overflow: hidden;
 }
 
+/* Captured-frame review mode: allow pinch/drag without the browser stealing gestures */
+.cameraReview {
+  touch-action: none;
+}
+
+/* Container that we translate/scale for zoom + pan */
+.cameraTransform {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+}
+
 .cameraLayer {
   position: absolute;
   inset: 0;

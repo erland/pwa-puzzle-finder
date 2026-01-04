@@ -1060,6 +1060,23 @@ const classifyPiecesNow = async (): Promise<void> => {
     }
   };
 
+  const rescanCaptured = async () => {
+    if (status !== 'captured') return;
+    // v1: Re-run the high quality pass on the already captured frame.
+    setOverlaySource('extracted');
+    setLiveModeEnabled(false);
+
+    const res = await runHighQualityCapturePass();
+    if (!res) return;
+
+    // Auto-enable Non-edge if we found pieces but none classified as corner/edge.
+    const hasCorner = res.classifiedPieces.some((p) => p.classification === 'corner');
+    const hasEdge = res.classifiedPieces.some((p) => p.classification === 'edge');
+    if (!hasCorner && !hasEdge && res.segCount > 0) {
+      setV1ShowNonEdge(true);
+    }
+  };
+
   const stopCamera = () => {
     camera.stopCamera();
     setLiveModeEnabled(false);
@@ -1122,6 +1139,8 @@ const classifyPiecesNow = async (): Promise<void> => {
         onStopCamera={stopCamera}
         onCaptureAndAnalyze={() => void captureAndAnalyze()}
         onBackToLive={() => void camera.backToLive()}
+        onRescan={() => void rescanCaptured()}
+        isProcessing={isProcessing}
         showCorners={v1ShowCorners}
         setShowCorners={setV1ShowCorners}
         showEdges={v1ShowEdges}

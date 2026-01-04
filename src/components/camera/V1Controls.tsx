@@ -10,6 +10,9 @@ export type V1ControlsProps = {
   onStopCamera: () => void;
   onCaptureAndAnalyze: () => void;
   onBackToLive: () => void;
+  onRescan: () => void;
+
+  isProcessing?: boolean;
 
   // v1 display filters
   showCorners: boolean;
@@ -45,6 +48,8 @@ export function V1Controls(props: V1ControlsProps) {
     onStopCamera,
     onCaptureAndAnalyze,
     onBackToLive,
+    onRescan,
+    isProcessing,
     showCorners,
     setShowCorners,
     showEdges,
@@ -60,6 +65,8 @@ export function V1Controls(props: V1ControlsProps) {
   const isIdle = status === 'idle';
   const isError = status === 'error';
 
+  const busy = Boolean(isProcessing);
+
   return (
     <section className="card" aria-label="Scan controls">
       <div className="row" style={{ justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
@@ -72,22 +79,27 @@ export function V1Controls(props: V1ControlsProps) {
 
         <div className="row" style={{ gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           {(isIdle || isError) && (
-            <button type="button" className="btn btnPrimary" onClick={onStartCamera}>
+            <button type="button" className="btn btnPrimary" onClick={onStartCamera} disabled={busy}>
               Start camera
             </button>
           )}
           {isLive && (
-            <button type="button" className="btn btnPrimary" onClick={onCaptureAndAnalyze}>
+            <button type="button" className="btn btnPrimary" onClick={onCaptureAndAnalyze} disabled={busy}>
               Capture
             </button>
           )}
           {isCaptured && (
-            <button type="button" className="btn btnPrimary" onClick={onBackToLive}>
-              Back to live
-            </button>
+            <>
+              <button type="button" className="btn btnPrimary" onClick={onRescan} disabled={busy}>
+                Re-scan
+              </button>
+              <button type="button" className="btn" onClick={onBackToLive} disabled={busy}>
+                Back to live
+              </button>
+            </>
           )}
           {!isIdle && (
-            <button type="button" className="btn" onClick={onStopCamera}>
+            <button type="button" className="btn" onClick={onStopCamera} disabled={busy}>
               Stop
             </button>
           )}
