@@ -30,11 +30,12 @@ describe('CameraPage', () => {
     });
   });
 
-  it('renders controls', () => {
+  it('renders v1 controls', () => {
     render(<CameraPage />);
     expect(screen.getByRole('button', { name: /start camera/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /stop camera/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /capture frame/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /corners/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /edges/i })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: /sensitivity/i })).toBeInTheDocument();
   });
 
   it('starts camera via getUserMedia', async () => {
@@ -49,7 +50,15 @@ describe('CameraPage', () => {
 
     await waitFor(() => expect(getUserMedia).toHaveBeenCalled());
 
-    expect(screen.getByText(/status:/i, { selector: 'p' }).textContent).toMatch(/idle|starting|live|captured|error/i);
+    // v1 UI: Start button disappears and Stop is shown once we begin starting the camera.
+    expect(screen.getByRole('button', { name: /stop/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /start camera/i })).not.toBeInTheDocument();
+
+    // Video element should have the stream attached.
+    const video = document.querySelector('video') as any;
+    expect(video).toBeTruthy();
+    expect(video.srcObject).toBe(stream);
+
   });
 
   it('shows error if getUserMedia fails', async () => {

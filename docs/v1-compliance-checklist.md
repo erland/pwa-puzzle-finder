@@ -60,7 +60,7 @@ Last updated: 2026-01-04
 | ID | Requirement | Status | Evidence / notes |
 |---|---|---:|---|
 | UI-1 | Camera view as the main screen | ✅ | `/` renders `CameraPage`. Legacy `/camera` redirects to `/`. `src/App.tsx` |
-| UI-2 | Compact panel: toggles + sensitivity + capture | ❌ | Current controls are more debug/pipeline oriented |
+| UI-2 | Compact panel: toggles + sensitivity + capture | 🟡 | Implemented v1 compact controls (`V1Controls`) and hid debug pipeline controls behind `?debug=1`. Still needs wording/polish to match spec exactly. `src/components/camera/V1Controls.tsx`, `src/pages/CameraPage.tsx` |
 | UI-3 | Captured review screen with zoom/pan + re-scan + back | ❌ | Capture exists; zoom/pan and dedicated review UX missing |
 | UI-4 | Help/onboarding with simple diagrams/instructions | 🟡 | Help exists; diagrams are optional but recommended for clarity |
 

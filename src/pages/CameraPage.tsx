@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useReducer, useRef, type RefObject, type PointerEvent as ReactPointerEvent } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState, type RefObject, type PointerEvent as ReactPointerEvent } from 'react';
 import { loadOpenCV, type OpenCvModule } from '../lib/opencv/loadOpenCV';
 import { processHelloOpenCvFrame } from '../lib/opencv/helloFrameProcessor';
 import { segmentPiecesFromFrame, type PieceCandidate, type SegmentPiecesResult } from '../lib/opencv/segmentPieces';
@@ -12,7 +12,8 @@ import type { CameraStatus, OverlayOptions } from '../types/overlay';
 import { drawOverlay } from '../lib/overlay/drawOverlay';
 import { useCameraStream } from '../hooks/useCameraStream';
 import { useVisionTick } from '../hooks/useVisionTick';
-import { CameraControlsCard, CameraIntroCard, CameraViewport } from '../components/camera';
+import { CameraControlsCard, CameraIntroCard, CameraViewport, V1Controls } from '../components/camera';
+import type { V1Sensitivity } from '../components/camera/V1Controls';
 import {
   cameraPageReducer,
   createInitialCameraPageState,
@@ -283,6 +284,91 @@ export default function CameraPage() {
   const setFilterPadding = (v: number) => setStateKey('filterPadding', v);
   const setFilterMaxPieces = (v: number) => setStateKey('filterMaxPieces', v);
 
+  // v1 UI state (UI-2)
+  const isDebug = useMemo(() => {
+    // Support both query-before-hash (e.g. ?debug=1#/) and query-inside-hash (e.g. #/?debug=1)
+    // since HashRouter commonly uses the latter in local dev.
+    try {
+      const fromSearch = new URLSearchParams(window.location.search).get('debug');
+      if (fromSearch) return fromSearch === '1';
+
+      const hash = window.location.hash || '';
+      const q = hash.indexOf('?');
+      if (q >= 0) {
+        const fromHash = new URLSearchParams(hash.slice(q + 1)).get('debug');
+        return fromHash === '1';
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  }, []);
+  const [v1ShowCorners, setV1ShowCorners] = useState(true);
+  const [v1ShowEdges, setV1ShowEdges] = useState(true);
+  const [v1ShowNonEdge, setV1ShowNonEdge] = useState(false);
+  const [v1Sensitivity, setV1Sensitivity] = useState<V1Sensitivity>('medium');
+
+  // v1 mode should "just work" without requiring debug toggles.
+  // We keep these settings user-configurable in debug mode, but in v1 mode
+  // we enable near-real-time processing by default.
+  useEffect(() => {
+    if (isDebug) return;
+    // Enable live processing and run the full pipeline so the v1 toggles have effect.
+    setLiveModeEnabled(true);
+    setLivePipeline('classify');
+    // Prefer extracted/classified pieces for overlay.
+    setOverlaySource('extracted');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isDebug]);
+
+
+  const applyV1SensitivityPreset = (level: V1Sensitivity) => {
+    // A single user-facing control maps to a small set of internal thresholds.
+    // Defaults (medium) match the existing tuned values in createInitialCameraPageState.
+    if (level === 'low') {
+      setCannyLow(80);
+      setCannyHigh(160);
+      setMinAreaRatio(0.0020);
+      setMorphKernel(5);
+      setFilterMinSolidity(0.85);
+      setFilterMaxAspect(3.5);
+    } else if (level === 'high') {
+      setCannyLow(40);
+      setCannyHigh(80);
+      setMinAreaRatio(0.0010);
+      setMorphKernel(7);
+      setFilterMinSolidity(0.75);
+      setFilterMaxAspect(5.0);
+    } else {
+      // medium
+      setCannyLow(60);
+      setCannyHigh(120);
+      setMinAreaRatio(0.0015);
+      setMorphKernel(5);
+      setFilterMinSolidity(0.8);
+      setFilterMaxAspect(4.0);
+    }
+  };
+
+  useEffect(() => {
+    applyV1SensitivityPreset(v1Sensitivity);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [v1Sensitivity]);
+
+  // Avoid a confusing "blank overlay" in v1 mode when classification finds only non-edge pieces.
+  // If we have detections but none are classified as corner/edge, automatically enable Non-edge.
+  useEffect(() => {
+    if (isDebug) return;
+    if (v1ShowNonEdge) return;
+    if (status !== 'live' && status !== 'captured') return;
+    if (!extractedPieces.length) return;
+    const hasCorner = extractedPieces.some((p) => p.classification === 'corner');
+    const hasEdge = extractedPieces.some((p) => p.classification === 'edge');
+    if (!hasCorner && !hasEdge) {
+      setV1ShowNonEdge(true);
+    }
+  }, [isDebug, v1ShowNonEdge, status, extractedPieces]);
+
   const classById = useMemo(() => {
     const m = new Map<number, 'corner' | 'edge' | 'interior'>();
     for (const p of extractedPieces) {
@@ -336,23 +422,36 @@ useEffect(() => {
 }, [cannyHigh]);
 
 const overlayPieces: PieceCandidate[] = useMemo(() => {
-  if (overlaySource === 'extracted' && extractedPieces.length > 0) {
-    return extractedPieces.map((p) => ({
+  const allowClass = (cls: 'corner' | 'edge' | 'interior' | undefined) => {
+    if (!cls) return true;
+    if (cls === 'corner') return v1ShowCorners;
+    if (cls === 'edge') return v1ShowEdges;
+    return v1ShowNonEdge; // interior/non-edge
+  };
+
+  // In v1 mode, prefer extracted pieces (so we can filter by corner/edge) when available.
+  const preferExtracted = !isDebug;
+  if ((preferExtracted || overlaySource === 'extracted') && extractedPieces.length > 0) {
+    const filtered = extractedPieces.filter((p) => allowClass(p.classification));
+    return filtered.map((p) => ({
       id: p.id,
       areaPx: p.areaPxProcessed,
       bbox: p.bboxSource,
       contour: p.contourSource
     }));
   }
-  return segPieces;
-}, [overlaySource, extractedPieces, segPieces]);
 
+  // Fall back to segmented candidates if extraction isn't available yet.
+  return segPieces;
+}, [overlaySource, extractedPieces, segPieces, v1ShowCorners, v1ShowEdges, v1ShowNonEdge, isDebug]);
+
+// In v1 UI mode we hide the "debuggy" overlay decorations like the grid/crosshair/chip.
 const overlayOptions: OverlayOptions = useMemo(
   () => ({
-    showGrid: overlayShowGrid,
-    showCrosshair: overlayShowCrosshair,
-    showStatusChip: overlayShowStatusChip,
-    showDebugText: overlayShowDebugText,
+    showGrid: isDebug ? overlayShowGrid : false,
+    showCrosshair: isDebug ? overlayShowCrosshair : false,
+    showStatusChip: isDebug ? overlayShowStatusChip : false,
+    showDebugText: isDebug ? overlayShowDebugText : false,
     showContours: overlayShowContours,
     showBBoxes: overlayShowBBoxes,
     showLabels: overlayShowLabels,
@@ -362,6 +461,7 @@ const overlayOptions: OverlayOptions = useMemo(
     useClassificationColors: overlayUseClassColors
   }),
   [
+    isDebug,
     overlayShowGrid,
     overlayShowCrosshair,
     overlayShowStatusChip,
@@ -641,7 +741,7 @@ const segmentPiecesNow = async (): Promise<SegmentPiecesResult | null> => {
   }
 };
 
-const extractPiecesNow = async () => {
+const extractPiecesNowWithResult = async (): Promise<{ pieces: ExtractedPiece[]; seg: SegmentPiecesResult } | null> => {
   setExtractError('');
   setExtractDebug('');
   setExtractStatus('running');
@@ -694,11 +794,15 @@ const extractPiecesNow = async () => {
     if (pieces.length > 0) {
       setSelectedPieceId(pieces[0].id);
     }
+
+    return { pieces, seg };
   } catch (err) {
     setExtractStatus('error');
     setExtractError(formatError(err));
+    return null;
   }
 };
+
 
 const clearSegmentation = () => {
   setSegPieces([]);
@@ -713,7 +817,13 @@ const clearSegmentation = () => {
   setExtractError('');
   setExtractDebug('');
 };
-const classifyPiecesNow = async () => {
+
+// Wrapper used by debug controls (CameraControlsCard) which expects Promise<void>
+const extractPiecesNow = async (): Promise<void> => {
+  await extractPiecesNowWithResult();
+};
+
+const classifyPiecesNowWithResult = async (piecesOverride?: ExtractedPiece[]): Promise<ExtractedPiece[] | null> => {
   try {
     setSegError('');
     setClassifyDebug('');
@@ -733,29 +843,56 @@ const classifyPiecesNow = async () => {
     const cv = cvRef.current;
     const inputCanvas = processingInputCanvasRef.current;
     if (!cv || !inputCanvas) throw new Error('Missing OpenCV/canvas refs.');
-    if (!segResult) throw new Error('Run segmentation first');
-    if (!extractedPieces.length) throw new Error('Extract pieces first');
 
     setIsProcessing(true);
+
+    const piecesToClassify = piecesOverride ?? extractedPieces;
+    if (!piecesToClassify.length) throw new Error('Extract pieces first');
 
     const { pieces, debug } = classifyEdgeCornerMvp({
       cv,
       processedFrameCanvas: inputCanvas,
-      pieces: extractedPieces
+      pieces: piecesToClassify
     });
 
     setExtractedPieces(pieces);
     setClassifyDebug(debug);
+    return pieces;
   } catch (e) {
     setSegError(`Classification error: ${formatError(e)}`);
+    return null;
   } finally {
     setIsProcessing(false);
   }
 };
 
+// Wrapper used by debug controls (CameraControlsCard) which expects Promise<void>
+const classifyPiecesNow = async (): Promise<void> => {
+  await classifyPiecesNowWithResult();
+};
 
 
-  const stopCamera = () => {
+
+  
+  const captureAndAnalyze = async () => {
+    // v1: Capture the current frame and run a full analysis pass (segment → extract → classify).
+    camera.captureFrame(stillCanvasRef.current);
+    setOverlaySource('extracted');
+    const res = await extractPiecesNowWithResult();
+    if (!res) return;
+
+    const classified = await classifyPiecesNowWithResult(res.pieces);
+    if (!classified || classified.length === 0) return;
+
+    // If we found pieces but none were classified as corner/edge, auto-enable Non-edge so the
+    // user doesn't end up with an empty overlay and think detection is broken.
+    const hasCorner = classified.some((p) => p.classification === 'corner');
+    const hasEdge = classified.some((p) => p.classification === 'edge');
+    if (!hasCorner && !hasEdge) {
+      setV1ShowNonEdge(true);
+    }
+  };
+const stopCamera = () => {
     camera.stopCamera();
     setSegPieces([]);
     setSegStatus('idle');
@@ -771,6 +908,26 @@ const classifyPiecesNow = async () => {
 
   return (
     <>
+      {/*
+        Hidden processing canvases used by the OpenCV pipeline.
+        These must exist even when the debug controls are hidden (v1 UI),
+        otherwise capture/analyze will silently do nothing.
+      */}
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          left: -10000,
+          top: -10000,
+          width: 1,
+          height: 1,
+          overflow: 'hidden'
+        }}
+      >
+        <canvas ref={processingInputCanvasRef} />
+        <canvas ref={processedCanvasRef} />
+      </div>
+
       <CameraIntroCard />
 
       <CameraViewport
@@ -782,7 +939,27 @@ const classifyPiecesNow = async () => {
         onOverlayPointerDown={handleOverlayPointerDown}
       />
 
-      <CameraControlsCard
+      <V1Controls
+        status={status}
+        streamInfo={streamInfo ?? ''}
+        onStartCamera={() => void startCamera()}
+        onStopCamera={stopCamera}
+        onCaptureAndAnalyze={() => void captureAndAnalyze()}
+        onBackToLive={() => void camera.backToLive()}
+        showCorners={v1ShowCorners}
+        setShowCorners={setV1ShowCorners}
+        showEdges={v1ShowEdges}
+        setShowEdges={setV1ShowEdges}
+        showNonEdge={v1ShowNonEdge}
+        setShowNonEdge={setV1ShowNonEdge}
+        sensitivity={v1Sensitivity}
+        setSensitivity={setV1Sensitivity}
+      />
+
+      {isDebug && (
+        <details className="card">
+          <summary style={{ cursor: 'pointer', fontWeight: 800 }}>Debug controls</summary>
+          <CameraControlsCard
         status={status}
         streamInfo={streamInfo ?? ''}
         onStartCamera={startCamera}
@@ -894,6 +1071,8 @@ const classifyPiecesNow = async () => {
         filterPadding={filterPadding}
         setFilterPadding={setFilterPadding}
       />
+        </details>
+      )}
     </>
   );
 }
