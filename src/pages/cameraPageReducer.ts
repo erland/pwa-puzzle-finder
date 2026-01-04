@@ -46,7 +46,7 @@ export type CameraPageState = {
   overlayShowContours: boolean;
   overlayShowBBoxes: boolean;
   overlayShowLabels: boolean;
-  overlayLabelMode: 'id' | 'id+class';
+  overlayLabelMode: 'id' | 'id+class' | 'class';
   overlayOpacity: number;
   overlayLineWidth: number;
   overlayUseClassColors: boolean;

@@ -1,5 +1,6 @@
 import type { CameraStatus } from '../../types/overlay';
 import type { V1Sensitivity } from '../../lib/vision/v1Sensitivity';
+import type { ScanCounts } from '../../lib/vision/scanModel';
 
 export type V1ControlsProps = {
   status: CameraStatus;
@@ -13,6 +14,11 @@ export type V1ControlsProps = {
   onRescan: () => void;
 
   isProcessing?: boolean;
+
+  counts?: {
+    total: ScanCounts;
+    visible: ScanCounts;
+  } | null;
 
   // v1 display filters
   showCorners: boolean;
@@ -50,6 +56,7 @@ export function V1Controls(props: V1ControlsProps) {
     onBackToLive,
     onRescan,
     isProcessing,
+    counts,
     showCorners,
     setShowCorners,
     showEdges,
@@ -75,6 +82,23 @@ export function V1Controls(props: V1ControlsProps) {
           <div style={{ opacity: 0.8, fontSize: 12, marginTop: 2 }}>
             {isError ? 'Camera error' : isCaptured ? 'Captured frame' : isLive ? 'Live' : 'Camera off'}
           </div>
+
+          {counts && counts.total.total > 0 && (
+            <div style={{ marginTop: 6, fontSize: 12, opacity: 0.92 }} aria-label="Scan counts">
+              <span style={{ fontWeight: 700 }}>Corners:</span> {counts.total.corners}
+              <span style={{ marginLeft: 10, fontWeight: 700 }}>Edges:</span> {counts.total.edges}
+              {counts.total.nonEdge + counts.total.unknown > 0 && (
+                <>
+                  <span style={{ marginLeft: 10, fontWeight: 700 }}>Others:</span> {counts.total.nonEdge + counts.total.unknown}
+                </>
+              )}
+              {counts.visible.total !== counts.total.total && (
+                <span style={{ marginLeft: 10, opacity: 0.75 }}>
+                  Showing {counts.visible.total}/{counts.total.total}
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="row" style={{ gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>

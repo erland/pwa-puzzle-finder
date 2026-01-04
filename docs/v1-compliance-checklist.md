@@ -22,15 +22,15 @@ Last updated: 2026-01-04
 | FR-4 | “Capture frame” option to freeze and inspect | ✅ | `CameraPage` has “Capture frame” + captured state |
 | FR-5 | Detect individual puzzle pieces | 🟡 | Segmentation/extraction pipeline exists; needs v1 UX integration. `src/lib/opencv/*` |
 | FR-6 | Classify each piece as corner/edge/non-edge/unknown | 🟡 | Classifier exists, but currently uses `interior` rather than explicit `unknown/non-edge`. `src/lib/opencv/classifyPieces.ts` |
-| FR-7 | Highlight corner and edge pieces with distinct markers | 🟡 | Overlay exists; ensure distinct, readable markers in v1 UI. `src/lib/overlay/drawOverlay.ts` |
+| FR-7 | Highlight corner and edge pieces with distinct markers | ✅ | Halo-stroked contours + per-class marker shapes for quick scanning. `src/lib/overlay/drawOverlay.ts` |
 | FR-8 | Uncertain cases → Unknown/Non-edge (avoid false labels) | ❌ | Needs explicit unknown/non-edge handling + conservative rules. `src/lib/opencv/classifyPieces.ts` |
 | FR-9 | Simple sensitivity control (Low/Med/High or slider) | ❌ | Many advanced params exist; needs a single simplified control. `src/pages/cameraPageReducer.ts`, `src/components/camera/CameraControlsCard.tsx` |
 | FR-10 | Filters: corners/edges toggles (+ optional unknown) | ❌ | Needs v1 filter toggles and consistent filtering logic in overlay + counts |
 | FR-11 | “Re-scan” for captured frames | 🟡 | Pipeline can be re-run, but v1 “Re-scan” UX in review mode not implemented |
 | FR-12 | “Reset settings” action | ❌ | Needs one-shot reset for v1 controls |
-| FR-13 | Outline each highlighted piece, optional label | 🟡 | Outline exists; labels and v1 polish still needed. `src/lib/overlay/drawOverlay.ts` |
-| FR-14 | Overlay remains readable (halo/outline) | 🟡 | Partial; ensure robust readability on bright/dim backgrounds |
-| FR-15 | Show summary counts (corners/edges/optional total) | ❌ | Needs UI counts based on current scan results |
+| FR-13 | Outline each highlighted piece, optional label | ✅ | Contours outlined with optional labels. v1 uses class-only labels (no ids). `src/lib/overlay/drawOverlay.ts` |
+| FR-14 | Overlay remains readable (halo/outline) | ✅ | Added halo stroke for contours/boxes + outlined label text. `src/lib/overlay/drawOverlay.ts` |
+| FR-15 | Show summary counts (corners/edges/optional total) | ✅ | Counts shown in v1 controls, includes "Showing x/y" when filters hide results. `src/components/camera/V1Controls.tsx`, `src/pages/CameraPage.tsx` |
 | FR-16 | Show quality feedback when results are poor | 🟡 | Quality heuristics exist; integrate into v1 UX. `src/lib/vision/quality.ts` |
 | FR-17 | Present actionable tips (lighting/contrast/spacing) | 🟡 | Tip strings exist; surface them in v1. `src/lib/vision/quality.ts` |
 | FR-18 | Help/onboarding screen | ✅ | `src/pages/HelpPage.tsx` (diagrams optional; can be improved) |
@@ -61,7 +61,7 @@ Last updated: 2026-01-04
 |---|---|---:|---|
 | UI-1 | Camera view as the main screen | ✅ | `/` renders `CameraPage`. Legacy `/camera` redirects to `/`. `src/App.tsx` |
 | UI-2 | Compact panel: toggles + sensitivity + capture | 🟡 | Implemented v1 compact controls (`V1Controls`) and hid debug pipeline controls behind `?debug=1`. Still needs wording/polish to match spec exactly. `src/components/camera/V1Controls.tsx`, `src/pages/CameraPage.tsx` |
-| UI-3 | Captured review screen with zoom/pan + re-scan + back | 🟡 | Review mode supports pan/zoom on captured frame and a dedicated Re-scan action. Uses DOM transform so overlay stays aligned. `src/components/camera/CameraViewport.tsx`, `src/components/camera/V1Controls.tsx`, `src/pages/CameraPage.tsx` |
+| UI-3 | Captured review screen with zoom/pan + re-scan + back | ✅ | Pan/zoom on captured frame + re-scan + back-to-live; overlay stays aligned via shared transform wrapper. `src/components/camera/CameraViewport.tsx`, `src/components/camera/V1Controls.tsx`, `src/pages/CameraPage.tsx` |
 | UI-4 | Help/onboarding with simple diagrams/instructions | 🟡 | Help exists; diagrams are optional but recommended for clarity |
 
 ---

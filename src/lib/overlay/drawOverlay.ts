@@ -105,25 +105,63 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, input: DrawOverlayInp
   // Draw piece contours, mapped from source frame to viewport coordinates.
   if (opts.showContours && pieces && pieces.length > 0 && sourceSize && sourceSize.w > 0 && sourceSize.h > 0) {
     const { scale, offX, offY } = computeFitTransform(w, h, sourceSize.w, sourceSize.h);
-  
-    ctx.globalAlpha = Math.max(0, Math.min(1, opts.opacity));
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+
+    // Make strokes and labels readable on both light/dark backgrounds.
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    const alpha = Math.max(0, Math.min(1, opts.opacity));
+
     ctx.font = '12px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif';
-  
+
+    const roundedRect = (x: number, y: number, rw: number, rh: number, r: number) => {
+      const rr = Math.max(0, Math.min(r, Math.min(rw, rh) / 2));
+      ctx.beginPath();
+      ctx.moveTo(x + rr, y);
+      ctx.lineTo(x + rw - rr, y);
+      ctx.quadraticCurveTo(x + rw, y, x + rw, y + rr);
+      ctx.lineTo(x + rw, y + rh - rr);
+      ctx.quadraticCurveTo(x + rw, y + rh, x + rw - rr, y + rh);
+      ctx.lineTo(x + rr, y + rh);
+      ctx.quadraticCurveTo(x, y + rh, x, y + rh - rr);
+      ctx.lineTo(x, y + rr);
+      ctx.quadraticCurveTo(x, y, x + rr, y);
+      ctx.closePath();
+    };
+
     const drawLabel = (x: number, y: number, text: string) => {
       const tw = ctx.measureText(text).width;
-      const px = Math.max(0, Math.min(w - (tw + 12), x));
-      const py = Math.max(0, Math.min(h - 16, y));
-      ctx.fillRect(px, py, tw + 12, 16);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillText(text, px + 6, py + 12);
+      const bw = tw + 14;
+      const bh = 18;
+      const px = Math.max(6, Math.min(w - (bw + 6), x));
+      const py = Math.max(6, Math.min(h - (bh + 6), y));
+
+      ctx.save();
+      ctx.globalAlpha = Math.min(1, alpha + 0.1);
       ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+      roundedRect(px, py, bw, bh, 8);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      // Text with subtle outline
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+      ctx.strokeText(text, px + 7, py + 13);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(text, px + 7, py + 13);
+      ctx.restore();
     };
-  
+
+    const classToLabel = (cls: PieceClass | undefined) => {
+      if (!cls) return undefined;
+      if (cls === 'corner') return 'Corner';
+      if (cls === 'edge') return 'Edge';
+      if (cls === 'unknown') return 'Unknown';
+      return 'Non-edge';
+    };
+
     for (const p of pieces) {
       const isSelected = selectedPieceId != null && p.id === selectedPieceId;
       const cls = classById?.get(p.id);
-  
+
       const baseColor = opts.useClassificationColors
         ? cls === 'corner'
           ? '#ff5566'
@@ -133,10 +171,11 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, input: DrawOverlayInp
               ? '#cccccc'
               : '#00ff66'
         : '#00ff66';
-  
-      ctx.strokeStyle = isSelected ? '#ffcc00' : baseColor;
-      ctx.lineWidth = isSelected ? Math.max(3, opts.lineWidth + 1) : opts.lineWidth;
-  
+
+      const strokeColor = isSelected ? '#ffcc00' : baseColor;
+      const lw = isSelected ? Math.max(3, opts.lineWidth + 1) : Math.max(2, opts.lineWidth);
+      const haloW = lw + 3;
+
       // Contour
       if (p.contour && p.contour.length > 0) {
         ctx.beginPath();
@@ -147,28 +186,86 @@ export function drawOverlay(ctx: CanvasRenderingContext2D, input: DrawOverlayInp
           ctx.lineTo(pk.x * scale + offX, pk.y * scale + offY);
         }
         ctx.closePath();
+
+        // Halo + main stroke
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, alpha + 0.15);
+        ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+        ctx.lineWidth = haloW;
         ctx.stroke();
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = strokeColor;
+        ctx.lineWidth = lw;
+        ctx.stroke();
+        ctx.restore();
       }
-  
+
       // BBox
       if (opts.showBBoxes) {
         const bx = p.bbox.x * scale + offX;
         const by = p.bbox.y * scale + offY;
         const bw = p.bbox.width * scale;
         const bh = p.bbox.height * scale;
+
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, alpha + 0.15);
+        ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+        ctx.lineWidth = haloW;
         ctx.strokeRect(bx, by, bw, bh);
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = strokeColor;
+        ctx.lineWidth = lw;
+        ctx.strokeRect(bx, by, bw, bh);
+        ctx.restore();
       }
-  
+
+      // Marker at bbox center for corner/edge (helps quick scanning)
+      if (cls === 'corner' || cls === 'edge' || cls === 'unknown') {
+        const cx = (p.bbox.x + p.bbox.width / 2) * scale + offX;
+        const cy = (p.bbox.y + p.bbox.height / 2) * scale + offY;
+        const r = 5;
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, alpha + 0.1);
+        ctx.fillStyle = strokeColor;
+        ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+        ctx.lineWidth = 3;
+        if (cls === 'corner') {
+          // small square
+          ctx.beginPath();
+          ctx.rect(cx - r, cy - r, r * 2, r * 2);
+          ctx.fill();
+          ctx.stroke();
+        } else {
+          // small circle for edge/unknown
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+        ctx.restore();
+      }
+
       // Label (near bbox top-left)
       if (opts.showLabels) {
         const lx = p.bbox.x * scale + offX;
         const ly = p.bbox.y * scale + offY;
-        const clsText = cls ? cls.toUpperCase() : '—';
-        const label = opts.labelMode === 'id' ? `#${p.id}` : `#${p.id}  ${clsText}`;
-        drawLabel(lx, ly - 18, label);
+
+        const clsLabel = classToLabel(cls);
+        const label =
+          opts.labelMode === 'id'
+            ? `#${p.id}`
+            : opts.labelMode === 'class'
+              ? cls === 'nonEdge'
+                ? undefined
+                : clsLabel
+              : clsLabel
+                ? `#${p.id} ${clsLabel}`
+                : `#${p.id}`;
+
+        if (label) drawLabel(lx, ly - 22, label);
       }
     }
-  
+
     ctx.globalAlpha = 1;
-}
+  }
 }

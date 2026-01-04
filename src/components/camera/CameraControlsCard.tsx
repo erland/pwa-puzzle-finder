@@ -41,8 +41,8 @@ export type CameraControlsCardProps = {
   overlayShowLabels: boolean;
   setOverlayShowLabels: (v: boolean) => void;
 
-  overlayLabelMode: 'id' | 'id+class';
-  setOverlayLabelMode: (v: 'id' | 'id+class') => void;
+  overlayLabelMode: 'id' | 'id+class' | 'class';
+  setOverlayLabelMode: (v: 'id' | 'id+class' | 'class') => void;
 
   overlayUseClassColors: boolean;
   setOverlayUseClassColors: (v: boolean) => void;
@@ -326,10 +326,11 @@ export function CameraControlsCard(props: CameraControlsCardProps) {
               <span className="muted">Label mode</span>
               <select
                 value={overlayLabelMode}
-                onChange={(e) => setOverlayLabelMode(e.target.value as 'id' | 'id+class')}
+                onChange={(e) => setOverlayLabelMode(e.target.value as 'id' | 'id+class' | 'class')}
               >
                 <option value="id">ID</option>
                 <option value="id+class">ID + class</option>
+                <option value="class">Class</option>
               </select>
             </label>
           </div>

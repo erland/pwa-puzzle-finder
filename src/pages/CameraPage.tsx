@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useReducer, useRef, useState, type RefObject, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type RefObject, type PointerEvent as ReactPointerEvent } from 'react';
 import { loadOpenCV, type OpenCvModule } from '../lib/opencv/loadOpenCV';
 import { processHelloOpenCvFrame } from '../lib/opencv/helloFrameProcessor';
 import { segmentPiecesFromFrame, type PieceCandidate, type SegmentPiecesResult } from '../lib/opencv/segmentPieces';
@@ -13,7 +13,7 @@ import { drawOverlay } from '../lib/overlay/drawOverlay';
 import { useCameraStream } from '../hooks/useCameraStream';
 import { useVisionTick } from '../hooks/useVisionTick';
 import { CameraControlsCard, CameraIntroCard, CameraViewport, V1Controls } from '../components/camera';
-import type { PieceClass } from '../lib/vision/scanModel';
+import { computeCountsFromClasses, type PieceClass } from '../lib/vision/scanModel';
 import { v1SensitivityToParams, type V1Sensitivity } from '../lib/vision/v1Sensitivity';
 import {
   cameraPageReducer,
@@ -410,19 +410,36 @@ useEffect(() => {
   cannyHighRef.current = cannyHigh;
 }, [cannyHigh]);
 
-const overlayPieces: PieceCandidate[] = useMemo(() => {
-  const allowClass = (cls: PieceClass | undefined) => {
+// v1 filtering: corners/edges/non-edge (nonEdge+unknown)
+const allowV1Class = useCallback(
+  (cls: PieceClass | undefined) => {
     if (!cls) return true;
     if (cls === 'corner') return v1ShowCorners;
     if (cls === 'edge') return v1ShowEdges;
     // nonEdge + unknown are treated as "Non-edge" in v1.
     return v1ShowNonEdge;
-  };
+  },
+  [v1ShowCorners, v1ShowEdges, v1ShowNonEdge]
+);
 
+const v1Counts = useMemo(() => {
+  if (!extractedPieces.length) return null;
+  const total = computeCountsFromClasses(
+    extractedPieces.map((p) => (p.classification ?? 'unknown') as PieceClass)
+  );
+  const visible = computeCountsFromClasses(
+    extractedPieces
+      .filter((p) => allowV1Class(p.classification))
+      .map((p) => (p.classification ?? 'unknown') as PieceClass)
+  );
+  return { total, visible };
+}, [extractedPieces, allowV1Class]);
+
+const overlayPieces: PieceCandidate[] = useMemo(() => {
   // In v1 mode, prefer extracted pieces (so we can filter by corner/edge) when available.
   const preferExtracted = !isDebug;
   if ((preferExtracted || overlaySource === 'extracted') && extractedPieces.length > 0) {
-    const filtered = extractedPieces.filter((p) => allowClass(p.classification));
+    const filtered = extractedPieces.filter((p) => allowV1Class(p.classification));
     return filtered.map((p) => ({
       id: p.id,
       areaPx: p.areaPxProcessed,
@@ -433,7 +450,7 @@ const overlayPieces: PieceCandidate[] = useMemo(() => {
 
   // Fall back to segmented candidates if extraction isn't available yet.
   return segPieces;
-}, [overlaySource, extractedPieces, segPieces, v1ShowCorners, v1ShowEdges, v1ShowNonEdge, isDebug]);
+}, [overlaySource, extractedPieces, segPieces, allowV1Class, isDebug]);
 
 // In v1 UI mode we hide the "debuggy" overlay decorations like the grid/crosshair/chip.
 const overlayOptions: OverlayOptions = useMemo(
@@ -443,11 +460,12 @@ const overlayOptions: OverlayOptions = useMemo(
     showStatusChip: isDebug ? overlayShowStatusChip : false,
     showDebugText: isDebug ? overlayShowDebugText : false,
     showContours: overlayShowContours,
-    showBBoxes: overlayShowBBoxes,
-    showLabels: overlayShowLabels,
-    labelMode: overlayLabelMode,
-    opacity: overlayOpacity,
-    lineWidth: overlayLineWidth,
+    showBBoxes: isDebug ? overlayShowBBoxes : false,
+    // In v1, always show simple class labels (no ids) for better readability.
+    showLabels: isDebug ? overlayShowLabels : true,
+    labelMode: isDebug ? overlayLabelMode : 'class',
+    opacity: isDebug ? overlayOpacity : 0.95,
+    lineWidth: isDebug ? overlayLineWidth : Math.max(3, overlayLineWidth),
     useClassificationColors: overlayUseClassColors
   }),
   [
@@ -1141,6 +1159,7 @@ const classifyPiecesNow = async (): Promise<void> => {
         onBackToLive={() => void camera.backToLive()}
         onRescan={() => void rescanCaptured()}
         isProcessing={isProcessing}
+        counts={v1Counts}
         showCorners={v1ShowCorners}
         setShowCorners={setV1ShowCorners}
         showEdges={v1ShowEdges}

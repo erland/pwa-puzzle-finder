@@ -8,7 +8,7 @@ export type OverlayOptions = {
   showContours: boolean;
   showBBoxes: boolean;
   showLabels: boolean;
-  labelMode: 'id' | 'id+class';
+  labelMode: 'id' | 'id+class' | 'class';
   opacity: number; // 0..1
   lineWidth: number;
   useClassificationColors: boolean;
