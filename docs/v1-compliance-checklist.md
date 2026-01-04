@@ -31,8 +31,8 @@ Last updated: 2026-01-04
 | FR-13 | Outline each highlighted piece, optional label | ✅ | Contours outlined with optional labels. v1 uses class-only labels (no ids). `src/lib/overlay/drawOverlay.ts` |
 | FR-14 | Overlay remains readable (halo/outline) | ✅ | Added halo stroke for contours/boxes + outlined label text. `src/lib/overlay/drawOverlay.ts` |
 | FR-15 | Show summary counts (corners/edges/optional total) | ✅ | Counts shown in v1 controls, includes "Showing x/y" when filters hide results. `src/components/camera/V1Controls.tsx`, `src/pages/CameraPage.tsx` |
-| FR-16 | Show quality feedback when results are poor | 🟡 | Quality heuristics exist; integrate into v1 UX. `src/lib/vision/quality.ts` |
-| FR-17 | Present actionable tips (lighting/contrast/spacing) | 🟡 | Tip strings exist; surface them in v1. `src/lib/vision/quality.ts` |
+| FR-16 | Show quality feedback when results are poor | ✅ | v1 shows an in-panel guidance banner (warn/bad) based on frame quality + edge cases. `src/components/camera/V1Controls.tsx`, `src/pages/CameraPage.tsx`, `src/lib/vision/quality.ts` |
+| FR-17 | Present actionable tips (lighting/contrast/spacing) | ✅ | Tips surfaced in v1 banner and expanded in Help page. `src/components/camera/V1Controls.tsx`, `src/pages/HelpPage.tsx`, `src/lib/vision/quality.ts` |
 | FR-18 | Help/onboarding screen | ✅ | `src/pages/HelpPage.tsx` (diagrams optional; can be improved) |
 | FR-19 | Core feature without account creation | ✅ | No auth/account flows present |
 | FR-20 | No upload/sharing of images by default | ✅ | No network upload paths found in current codebase |
@@ -62,7 +62,7 @@ Last updated: 2026-01-04
 | UI-1 | Camera view as the main screen | ✅ | `/` renders `CameraPage`. Legacy `/camera` redirects to `/`. `src/App.tsx` |
 | UI-2 | Compact panel: toggles + sensitivity + capture | 🟡 | Implemented v1 compact controls (`V1Controls`) and hid debug pipeline controls behind `?debug=1`. Still needs wording/polish to match spec exactly. `src/components/camera/V1Controls.tsx`, `src/pages/CameraPage.tsx` |
 | UI-3 | Captured review screen with zoom/pan + re-scan + back | ✅ | Pan/zoom on captured frame + re-scan + back-to-live; overlay stays aligned via shared transform wrapper. `src/components/camera/CameraViewport.tsx`, `src/components/camera/V1Controls.tsx`, `src/pages/CameraPage.tsx` |
-| UI-4 | Help/onboarding with simple diagrams/instructions | 🟡 | Help exists; diagrams are optional but recommended for clarity |
+| UI-4 | Help/onboarding with simple diagrams/instructions | ✅ | Added corner/edge/non-edge diagrams + troubleshooting + permission note. `src/pages/HelpPage.tsx` |
 
 ---
 
@@ -70,7 +70,7 @@ Last updated: 2026-01-04
 
 | ID | Requirement | Status | Evidence / notes |
 |---|---|---:|---|
-| EH-1 | Warn when heavy overlap → results may be inaccurate | 🟡 | Heuristic warnings exist (foreground ratio / “too much foreground”). `src/lib/vision/quality.ts` |
+| EH-1 | Warn when heavy overlap → results may be inaccurate | ✅ | Added lightweight overlap heuristic (bbox-based) surfaced in v1 guidance banner. `src/lib/vision/overlap.ts`, `src/pages/CameraPage.tsx`, `src/components/camera/V1Controls.tsx` |
 | EH-2 | Warn for too dark/bright/blurry + suggest steps | ✅ | Implemented via quality guidance. `src/lib/vision/quality.ts` |
 | EH-3 | If no pieces detected → suggest fixes | ✅ | Implemented via guidanceFromFrameQuality. `src/lib/vision/quality.ts` |
 

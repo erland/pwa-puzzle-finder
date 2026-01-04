@@ -6,6 +6,7 @@ import { filterAndExtractPieces, type ExtractedPiece } from '../lib/opencv/extra
 import { classifyEdgeCornerMvp } from '../lib/opencv/classifyPieces';
 import { VisionWorkerClient } from '../lib/vision/visionWorkerClient';
 import { frameQualityToStatus, guidanceFromFrameQuality, type FrameQuality } from '../lib/vision/quality';
+import { overlapLooksHeavy } from '../lib/vision/overlap';
 import { pointInPolygon } from '../lib/overlay/geometry';
 import { computeFitTransform, mapViewportToSourcePoint } from '../lib/overlay/coordinates';
 import type { CameraStatus, OverlayOptions } from '../types/overlay';
@@ -1117,6 +1118,52 @@ const classifyPiecesNow = async (): Promise<void> => {
     [frameQuality, segPieces.length, filterMaxPieces]
   );
 
+  // v1: Surface only actionable warnings/tips (FR-16..18, EH-1..3)
+  const heavyOverlap = useMemo(
+    () => overlapLooksHeavy({ boxes: extractedPieces.map((p) => p.bboxSource) }),
+    [extractedPieces]
+  );
+
+  const v1GuidanceItems = useMemo(() => {
+    if (status !== 'live' && status !== 'captured') return [];
+
+    const piecesFound = v1Counts?.total.total ?? extractedPieces.length ?? segPieces.length;
+    let items = guidanceFromFrameQuality(frameQuality, {
+      piecesFound,
+      maxPieces: filterMaxPieces
+    }).filter((g) => g.level === 'warn' || g.level === 'bad');
+
+    if (heavyOverlap) {
+      items = [
+        {
+          key: 'overlap-heavy',
+          level: 'warn',
+          message: 'Pieces appear to overlap. Spread pieces apart for more accurate results.'
+        },
+        ...items
+      ];
+    }
+
+    if (piecesFound === 0) {
+      // EH-3: provide a few concrete suggestions (kept short for v1 UI)
+      items = [
+        ...items,
+        { key: 'pieces-tip-contrast', level: 'warn', message: 'Use a plain, contrasting background (cloth/paper).' },
+        { key: 'pieces-tip-distance', level: 'warn', message: 'Move closer and keep pieces large in frame.' },
+        { key: 'pieces-tip-light', level: 'warn', message: 'Increase lighting and reduce shadows/reflections.' },
+        { key: 'pieces-tip-spacing', level: 'warn', message: 'Avoid overlap and keep pieces separated.' }
+      ];
+    }
+
+    // De-duplicate by key while keeping order.
+    const seen = new Set<string>();
+    return items.filter((g) => {
+      if (seen.has(g.key)) return false;
+      seen.add(g.key);
+      return true;
+    });
+  }, [status, frameQuality, v1Counts, extractedPieces.length, segPieces.length, filterMaxPieces, heavyOverlap]);
+
   return (
     <>
       {/*
@@ -1168,6 +1215,8 @@ const classifyPiecesNow = async (): Promise<void> => {
         setShowNonEdge={setV1ShowNonEdge}
         sensitivity={v1Sensitivity}
         setSensitivity={setV1Sensitivity}
+        qualityStatus={qualityStatus}
+        guidanceItems={v1GuidanceItems}
       />
 
       {isDebug && (
