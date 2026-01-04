@@ -13,6 +13,12 @@ A Progressive Web App that uses your camera + OpenCV.js to segment and extract j
 - Optional Worker pipeline for heavy vision work
 - Quality guidance + clear error states (lighting/motion/contrast hints)
 
+## Docs
+
+- v1 functional spec: `docs/specification.md`
+- v1 compliance checklist: `docs/v1-compliance-checklist.md`
+- Current implementation plan: `docs/development-plan-v1.md`
+
 ## Run locally
 
 ```bash

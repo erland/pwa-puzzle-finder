@@ -23,7 +23,11 @@ function TopNav() {
 
 export default function App() {
   return (
-    <HashRouter>
+    <HashRouter
+      // Opt into React Router v7 behavior early to avoid noisy test warnings.
+      // See: https://reactrouter.com/v6/upgrading/future
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
       <div className="container">
         <TopNav />
         <Routes>
