@@ -444,27 +444,33 @@ function filterAndExtractPiecesCore(cv, imageData, segmentation, options) {
 }
 
 function classifyEdgeCornerMvpCore(cv, imageData, pieces, options) {
-  const borderTol = options?.borderTolerancePx ?? 6;
-  const angleTol = options?.angleToleranceDeg ?? 20;
-  const minLenRatio = options?.minLineLengthRatio ?? 0.35;
-  const houghThreshold = options?.houghThreshold ?? 30;
-  const cannyLow = options?.cannyLow ?? 60;
-  const cannyHigh = options?.cannyHigh ?? 120;
+  const angleTol = options?.angleToleranceDeg ?? 25;
+  const minLenRatio = options?.minLineLengthRatio ?? 0.25;
+  const houghThreshold = options?.houghThreshold ?? 20;
+  const cannyLow = options?.cannyLow ?? 40;
+  const cannyHigh = options?.cannyHigh ?? 90;
   const uncertainMarginRatio = options?.uncertainMarginRatio ?? 0.10;
 
-  // We operate in processed coordinates.
+  // Processed-frame dimensions (same coordinate space as bboxProcessed/contourProcessed).
   const procW = imageData.width;
   const procH = imageData.height;
 
-  const src = cv.matFromImageData(imageData); // RGBA
+  // Convert processed frame to grayscale once; per-piece work happens on ROI + contour mask.
+  const rgba = cv.matFromImageData(imageData);
   const gray = new cv.Mat();
-  const edges = new cv.Mat();
-  const lines = new cv.Mat();
+
+  const safeDelete = (m) => {
+    try {
+      if (m && (!m.isDeleted || !m.isDeleted())) m.delete();
+    } catch {
+      // ignore
+    }
+  };
 
   let corners = 0, edgesCount = 0, nonEdges = 0, unknowns = 0;
 
   try {
-    cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
+    cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
 
     const updated = pieces.map((p) => {
       const roi = p.bboxProcessed;
@@ -472,24 +478,66 @@ function classifyEdgeCornerMvpCore(cv, imageData, pieces, options) {
       const ry = Math.max(0, Math.floor(roi.y));
       const rw = Math.min(procW - rx, Math.floor(roi.width));
       const rh = Math.min(procH - ry, Math.floor(roi.height));
-      if (rw <= 5 || rh <= 5) {
+
+      const contour = p.contourProcessed ?? [];
+      if (rw <= 10 || rh <= 10 || contour.length < 3) {
         unknowns++;
-        return { ...p, classification: 'unknown', classificationConfidence: 0, classificationDebug: 'ROI too small.' };
+        return { ...p, classification: 'unknown', classificationConfidence: 0, classificationDebug: 'Missing contour/ROI too small.' };
       }
 
-      // Crop ROI
       const rect = new cv.Rect(rx, ry, rw, rh);
-      const grayRoi = gray.roi(rect);
+
+      // Mats created per-piece (owned here).
+      let grayRoi = null;
+      let mask = null;
+      let cnt = null;
+      let contoursVec = null;
+      let kernel = null;
+      let boundary = null;
+      let masked = null;
+      let edgesMat = null;
+      let boundaryEdges = null;
+      let lines = null;
 
       try {
-        cv.Canny(grayRoi, edges, cannyLow, cannyHigh, 3, false);
+        // Crop grayscale ROI for the piece bbox
+        grayRoi = gray.roi(rect);
 
-        // Hough lines on edges
-        const minLineLen = Math.round(Math.min(rw, rh) * minLenRatio);
-        cv.HoughLinesP(edges, lines, 1, Math.PI / 180, houghThreshold, minLineLen, 10);
+        // Build a filled mask from the piece contour (in ROI-local coords)
+        mask = new cv.Mat(rh, rw, cv.CV_8UC1, new cv.Scalar(0));
+        cnt = new cv.Mat(contour.length, 1, cv.CV_32SC2);
+        for (let i = 0; i < contour.length; i++) {
+          cnt.intPtr(i, 0)[0] = Math.round(contour[i].x - rx);
+          cnt.intPtr(i, 0)[1] = Math.round(contour[i].y - ry);
+        }
+        contoursVec = new cv.MatVector();
+        contoursVec.push_back(cnt);
+        cv.drawContours(mask, contoursVec, 0, new cv.Scalar(255), -1);
 
-        let bestH = 0;
-        let bestV = 0;
+        // Boundary pixels only (reduces texture/shadow edges inside the piece)
+        kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3));
+        boundary = new cv.Mat();
+        cv.morphologyEx(mask, boundary, cv.MORPH_GRADIENT, kernel);
+
+        // Edges only where the piece boundary is
+        masked = new cv.Mat();
+        cv.bitwise_and(grayRoi, grayRoi, masked, mask);
+
+        edgesMat = new cv.Mat();
+        cv.Canny(masked, edgesMat, cannyLow, cannyHigh, 3, false);
+
+        boundaryEdges = new cv.Mat();
+        cv.bitwise_and(edgesMat, edgesMat, boundaryEdges, boundary);
+
+        // Hough lines on boundary edges
+        lines = new cv.Mat();
+        const minLineLen = Math.max(12, Math.round(Math.max(rw, rh) * minLenRatio));
+        cv.HoughLinesP(boundaryEdges, lines, 1, Math.PI / 180, houghThreshold, minLineLen, 10);
+
+        // Pick the strongest direction, then the strongest ~perpendicular direction.
+        let bestLen1 = 0;
+        let bestAng1 = null;
+        let bestLen2 = 0;
 
         for (let i = 0; i < lines.rows; i++) {
           const x1 = lines.intPtr(i, 0)[0];
@@ -501,31 +549,42 @@ function classifyEdgeCornerMvpCore(cv, imageData, pieces, options) {
           const len = Math.hypot(dx, dy);
           if (len < minLineLen) continue;
 
-          const ang = Math.abs((Math.atan2(dy, dx) * 180) / Math.PI);
-          // Normalize to [0,90]
-          const angN = ang > 90 ? 180 - ang : ang;
+          let ang = (Math.atan2(dy, dx) * 180) / Math.PI;
+          if (ang < 0) ang += 180;
 
-          const nearH = angN <= angleTol;
-          const nearV = Math.abs(angN - 90) <= angleTol;
-
-          // Check if line lies near ROI border (outer boundary)
-          const nearLeft = x1 < borderTol && x2 < borderTol;
-          const nearRight = x1 > rw - borderTol && x2 > rw - borderTol;
-          const nearTop = y1 < borderTol && y2 < borderTol;
-          const nearBottom = y1 > rh - borderTol && y2 > rh - borderTol;
-
-          if (nearH && (nearTop || nearBottom)) bestH = Math.max(bestH, len);
-          if (nearV && (nearLeft || nearRight)) bestV = Math.max(bestV, len);
+          if (len > bestLen1) {
+            bestLen1 = len;
+            bestAng1 = ang;
+          }
         }
 
-        const hasH = bestH >= minLineLen;
-        const hasV = bestV >= minLineLen;
+        if (bestAng1 != null) {
+          for (let i = 0; i < lines.rows; i++) {
+            const x1 = lines.intPtr(i, 0)[0];
+            const y1 = lines.intPtr(i, 0)[1];
+            const x2 = lines.intPtr(i, 0)[2];
+            const y2 = lines.intPtr(i, 0)[3];
+            const dx = x2 - x1;
+            const dy = y2 - y1;
+            const len = Math.hypot(dx, dy);
+            if (len < minLineLen) continue;
 
-        // Convert evidence into a conservative classification.
+            let ang = (Math.atan2(dy, dx) * 180) / Math.PI;
+            if (ang < 0) ang += 180;
+
+            let diff = Math.abs(ang - bestAng1);
+            if (diff > 90) diff = 180 - diff;
+
+            const nearPerp = Math.abs(diff - 90) <= angleTol;
+            if (nearPerp && len > bestLen2) {
+              bestLen2 = len;
+            }
+          }
+        }
+
         const maxDim = Math.max(rw, rh);
-        const hRatio = maxDim > 0 ? bestH / maxDim : 0;
-        const vRatio = maxDim > 0 ? bestV / maxDim : 0;
-        const bestRatio = Math.max(hRatio, vRatio);
+        const ratio1 = maxDim > 0 ? bestLen1 / maxDim : 0;
+        const ratio2 = maxDim > 0 ? bestLen2 / maxDim : 0;
 
         const sideConf = (ratio) => {
           if (ratio <= 0) return 0;
@@ -533,23 +592,27 @@ function classifyEdgeCornerMvpCore(cv, imageData, pieces, options) {
           return clamp01((ratio - minLenRatio) / denom);
         };
 
-        const hConf = hasH ? sideConf(hRatio) : 0;
-        const vConf = hasV ? sideConf(vRatio) : 0;
+        const conf1 = bestLen1 >= minLineLen ? sideConf(ratio1) : 0;
+        const conf2 = bestLen2 >= minLineLen ? sideConf(ratio2) : 0;
+
+        const has1 = bestLen1 >= minLineLen;
+        const has2 = bestLen2 >= minLineLen;
 
         let cls = 'nonEdge';
         let conf = 0.7;
 
-        if (hasH && hasV) {
+        if (has1 && has2) {
           cls = 'corner';
-          conf = Math.min(hConf, vConf);
-        } else if (hasH || hasV) {
+          conf = Math.min(conf1, conf2);
+        } else if (has1) {
           cls = 'edge';
-          conf = Math.max(hConf, vConf);
+          conf = conf1;
         } else {
           cls = 'nonEdge';
           conf = 0.7;
         }
 
+        const bestRatio = Math.max(ratio1, ratio2);
         const borderline = bestRatio > 0 && bestRatio < minLenRatio * (1 + uncertainMarginRatio);
         if ((cls === 'corner' || cls === 'edge') && borderline) {
           cls = 'unknown';
@@ -565,25 +628,29 @@ function classifyEdgeCornerMvpCore(cv, imageData, pieces, options) {
           ...p,
           classification: cls,
           classificationConfidence: conf,
-          classificationDebug: `H:${hasH ? 'Y' : 'N'}(${bestH.toFixed(0)}) V:${hasV ? 'Y' : 'N'}(${bestV.toFixed(0)})`
+          classificationDebug: `minLine:${minLineLen} L1:${bestLen1.toFixed(0)} L2:${bestLen2.toFixed(0)}`
         };
       } finally {
-        grayRoi.delete();
-        // NOTE: Don't call lines.delete() inside the loop.
-        // In OpenCV.js, once a Mat is deleted the JS wrapper becomes invalid and can't be reused.
-        // Reset the output mat to empty for the next iteration instead.
-        lines.create(0, 0, cv.CV_32SC4);
+        safeDelete(lines);
+        safeDelete(boundaryEdges);
+        safeDelete(edgesMat);
+        safeDelete(masked);
+        safeDelete(boundary);
+        safeDelete(kernel);
+        safeDelete(contoursVec);
+        safeDelete(cnt);
+        safeDelete(mask);
+        safeDelete(grayRoi);
       }
     });
 
     return { pieces: updated, debug: `Corners: ${corners}, Edges: ${edgesCount}, Non-edge: ${nonEdges}, Unknown: ${unknowns}` };
   } finally {
-    src.delete();
+    rgba.delete();
     gray.delete();
-    edges.delete();
-    lines.delete();
   }
 }
+
 
 self.onmessage = async (event) => {
   const msg = event.data || {};
