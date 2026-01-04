@@ -41,10 +41,6 @@ export interface UseVisionTickParams {
   processingInputCanvasRef: RefObject<HTMLCanvasElement | null>;
   processedCanvasRef: RefObject<HTMLCanvasElement | null>;
 
-  // If Hello-OpenCV demo processing is active, live mode should stop it (matches previous behavior).
-  processingTimerRef?: MutableRefObject<number | null>;
-  stopHelloOpenCvProcessing?: () => void;
-
   // Worker offload
   useWorker: boolean;
   appBasePath: string;
@@ -102,8 +98,6 @@ export function useVisionTick(params: UseVisionTickParams) {
     stillCanvasRef,
     processingInputCanvasRef,
     processedCanvasRef,
-    processingTimerRef,
-    stopHelloOpenCvProcessing,
     useWorker,
     appBasePath,
     workerClientRef,
@@ -153,10 +147,6 @@ export function useVisionTick(params: UseVisionTickParams) {
     if (!enabled) {
       stopLiveProcessing();
       return;
-    }
-
-    if (processingTimerRef?.current != null) {
-      stopHelloOpenCvProcessing?.();
     }
 
     if (cameraStatus !== 'live' && cameraStatus !== 'captured') {

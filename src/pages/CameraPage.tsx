@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type RefObject, type PointerEvent as ReactPointerEvent } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useReducer, useRef, useState, type RefObject, type PointerEvent as ReactPointerEvent } from 'react';
 import { loadOpenCV, type OpenCvModule } from '../lib/opencv/loadOpenCV';
-import { processHelloOpenCvFrame } from '../lib/opencv/helloFrameProcessor';
 import { segmentPiecesFromFrame, type PieceCandidate, type SegmentPiecesResult } from '../lib/opencv/segmentPieces';
 import { filterAndExtractPieces, type ExtractedPiece } from '../lib/opencv/extractPieces';
 import { classifyEdgeCornerMvp } from '../lib/opencv/classifyPieces';
@@ -13,14 +12,20 @@ import type { CameraStatus, OverlayOptions } from '../types/overlay';
 import { drawOverlay } from '../lib/overlay/drawOverlay';
 import { useCameraStream } from '../hooks/useCameraStream';
 import { useVisionTick } from '../hooks/useVisionTick';
-import { CameraControlsCard, CameraIntroCard, CameraViewport, V1Controls } from '../components/camera';
+import { CameraIntroCard, CameraViewport, V1Controls } from '../components/camera';
 import { computeCountsFromClasses, type PieceClass } from '../lib/vision/scanModel';
 import { v1SensitivityToParams, type V1Sensitivity } from '../lib/vision/v1Sensitivity';
+import { isDebugEnabled } from '../lib/debugFlags';
 import {
   cameraPageReducer,
   createInitialCameraPageState,
   type CameraPageState
 } from './cameraPageReducer';
+
+const DebugCameraControlsCard = lazy(async () => {
+  const mod = await import('../components/camera/CameraControlsCard');
+  return { default: mod.CameraControlsCard };
+});
 
 function getAppBasePath(): string {
   // Runtime base path used for loading assets under a non-root deploy (e.g. GitHub Pages).
@@ -179,15 +184,11 @@ export default function CameraPage() {
 
   // OpenCV state (lazy-loaded on user action).
   const cvRef = useRef<OpenCvModule | null>(null);
-  const processingTimerRef = useRef<number | null>(null);
-  const cannyLowRef = useRef<number>(state.cannyLow);
-  const cannyHighRef = useRef<number>(state.cannyHigh);
 
   const {
     opencvStatus,
     opencvBuildInfoLine,
     opencvError,
-    isProcessing,
     cannyLow,
     cannyHigh,
     minAreaRatio,
@@ -236,7 +237,6 @@ export default function CameraPage() {
   const setOpenCvStatus = (v: CameraPageState['opencvStatus']) => setStateKey('opencvStatus', v);
   const setOpenCvBuildInfoLine = (v: string) => setStateKey('opencvBuildInfoLine', v);
   const setOpenCvError = (v: string) => setStateKey('opencvError', v);
-  const setIsProcessing = (v: boolean) => setStateKey('isProcessing', v);
   const setCannyLow = (v: number) => setStateKey('cannyLow', v);
   const setCannyHigh = (v: number) => setStateKey('cannyHigh', v);
 
@@ -288,28 +288,12 @@ export default function CameraPage() {
   const setFilterMaxPieces = (v: number) => setStateKey('filterMaxPieces', v);
 
   // v1 UI state (UI-2)
-  const isDebug = useMemo(() => {
-    // Support both query-before-hash (e.g. ?debug=1#/) and query-inside-hash (e.g. #/?debug=1)
-    // since HashRouter commonly uses the latter in local dev.
-    try {
-      const fromSearch = new URLSearchParams(window.location.search).get('debug');
-      if (fromSearch) return fromSearch === '1';
-
-      const hash = window.location.hash || '';
-      const q = hash.indexOf('?');
-      if (q >= 0) {
-        const fromHash = new URLSearchParams(hash.slice(q + 1)).get('debug');
-        return fromHash === '1';
-      }
-    } catch {
-      // ignore
-    }
-    return false;
-  }, []);
+  const isDebug = useMemo(() => (typeof window !== 'undefined' ? isDebugEnabled() : false), []);
   const [v1ShowCorners, setV1ShowCorners] = useState(true);
   const [v1ShowEdges, setV1ShowEdges] = useState(true);
   const [v1ShowNonEdge, setV1ShowNonEdge] = useState(false);
   const [v1Sensitivity, setV1Sensitivity] = useState<V1Sensitivity>('medium');
+  const [scanBusy, setScanBusy] = useState(false);
 
   // Processing presets
   const LIVE_TARGET_WIDTH = 640;
@@ -403,14 +387,6 @@ export default function CameraPage() {
     };
   }, [useWorker, appBasePath]);
 
-
-useEffect(() => {
-  cannyLowRef.current = cannyLow;
-}, [cannyLow]);
-
-useEffect(() => {
-  cannyHighRef.current = cannyHigh;
-}, [cannyHigh]);
 
 // v1 filtering: corners/edges/non-edge (nonEdge+unknown)
 const allowV1Class = useCallback(
@@ -525,15 +501,6 @@ const handleOverlayPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
 };
 
 
-const stopHelloOpenCvProcessing = () => {
-  if (processingTimerRef.current != null) {
-    window.clearInterval(processingTimerRef.current);
-    processingTimerRef.current = null;
-  }
-  setIsProcessing(false);
-};
-
-
 const ensureOpenCvReady = async (): Promise<OpenCvModule> => {
   if (cvRef.current) return cvRef.current;
 
@@ -563,9 +530,6 @@ useVisionTick({
   stillCanvasRef,
   processingInputCanvasRef,
   processedCanvasRef,
-
-  processingTimerRef,
-  stopHelloOpenCvProcessing,
 
   useWorker,
   appBasePath,
@@ -601,80 +565,6 @@ useVisionTick({
   setExtractedPieces,
   setClassifyDebug
 });
-
-
-
-
-// Stop processing whenever we leave the live camera mode, and on unmount.
-useEffect(() => {
-  if (status !== 'live') stopHelloOpenCvProcessing();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, [status]);
-
-useEffect(() => {
-  return () => stopHelloOpenCvProcessing();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-}, []);
-
-const startHelloOpenCvProcessing = async () => {
-  if (isProcessing) return;
-
-  try {
-    setOpenCvError('');
-    if (!cvRef.current) {
-      setOpenCvStatus('loading');
-      const cv = await loadOpenCV();
-      cvRef.current = cv;
-
-      // Keep this lightweight: store just the first line of build info.
-      const firstLine = String(cv.getBuildInformation?.() ?? '')
-        .split('\n')
-        .map((s: string) => s.trim())
-        .filter(Boolean)[0];
-      setOpenCvBuildInfoLine(firstLine ?? 'OpenCV loaded');
-      setOpenCvStatus('ready');
-    }
-
-    const cv = cvRef.current;
-    const video = videoRef.current;
-    const inputCanvas = processingInputCanvasRef.current;
-    const outputCanvas = processedCanvasRef.current;
-
-    if (!cv || !video || !inputCanvas || !outputCanvas) {
-      throw new Error('Missing video/canvas refs for OpenCV processing.');
-    }
-
-    // Run at a modest rate to keep CPU/battery reasonable on mobile.
-    const tick = () => {
-      try {
-        processHelloOpenCvFrame({
-          cv,
-          video,
-          inputCanvas,
-          outputCanvas,
-          options: {
-            cannyLowThreshold: cannyLowRef.current,
-            cannyHighThreshold: cannyHighRef.current,
-            targetWidth: 640
-          }
-        });
-      } catch (err) {
-        // If OpenCV throws, stop processing and surface the error.
-        stopHelloOpenCvProcessing();
-        setOpenCvStatus('error');
-        setOpenCvError(formatError(err));
-      }
-    };
-
-    tick();
-    processingTimerRef.current = window.setInterval(tick, 120);
-    setIsProcessing(true);
-  } catch (err) {
-    stopHelloOpenCvProcessing();
-    setOpenCvStatus('error');
-    setOpenCvError(formatError(err));
-  }
-};
 
   
 
@@ -857,7 +747,7 @@ const classifyPiecesNowWithResult = async (piecesOverride?: ExtractedPiece[]): P
     const inputCanvas = processingInputCanvasRef.current;
     if (!cv || !inputCanvas) throw new Error('Missing OpenCV/canvas refs.');
 
-    setIsProcessing(true);
+    setScanBusy(true);
 
     const piecesToClassify = piecesOverride ?? extractedPieces;
     if (!piecesToClassify.length) throw new Error('Extract pieces first');
@@ -879,7 +769,7 @@ const classifyPiecesNowWithResult = async (piecesOverride?: ExtractedPiece[]): P
     setSegError(`Classification error: ${formatError(e)}`);
     return null;
   } finally {
-    setIsProcessing(false);
+    setScanBusy(false);
   }
 };
 
@@ -909,7 +799,7 @@ const classifyPiecesNow = async (): Promise<void> => {
       setClassifyDebug('');
       setSegStatus('running');
       setExtractStatus('idle');
-      setIsProcessing(true);
+      setScanBusy(true);
 
       const still = stillCanvasRef.current;
       const inputCanvas = processingInputCanvasRef.current;
@@ -1057,7 +947,7 @@ const classifyPiecesNow = async (): Promise<void> => {
       return null;
     } finally {
       if (captureSeqRef.current === mySeq) {
-        setIsProcessing(false);
+        setScanBusy(false);
       }
     }
   };
@@ -1208,7 +1098,7 @@ const classifyPiecesNow = async (): Promise<void> => {
         onCaptureAndAnalyze={() => void captureAndAnalyze()}
         onBackToLive={() => void camera.backToLive()}
         onRescan={() => void rescanCaptured()}
-        isProcessing={isProcessing}
+        busy={scanBusy}
         counts={v1Counts}
         showCorners={v1ShowCorners}
         setShowCorners={setV1ShowCorners}
@@ -1225,7 +1115,8 @@ const classifyPiecesNow = async (): Promise<void> => {
       {isDebug && (
         <details className="card">
           <summary style={{ cursor: 'pointer', fontWeight: 800 }}>Debug controls</summary>
-          <CameraControlsCard
+          <Suspense fallback={<div className="muted" style={{ marginTop: 8 }}>Loading debug controls…</div>}>
+            <DebugCameraControlsCard
         status={status}
         streamInfo={streamInfo ?? ''}
         onStartCamera={startCamera}
@@ -1314,10 +1205,8 @@ const classifyPiecesNow = async (): Promise<void> => {
         opencvError={opencvError}
         opencvBuildInfoLine={opencvBuildInfoLine ?? ''}
         opencvReady={!!cvRef.current}
-        isProcessing={isProcessing}
-        onToggleHelloProcessing={() =>
-          void (isProcessing ? stopHelloOpenCvProcessing() : startHelloOpenCvProcessing())
-        }
+
+        busy={scanBusy}
 
         cannyLow={cannyLow}
         setCannyLow={setCannyLow}
@@ -1336,7 +1225,8 @@ const classifyPiecesNow = async (): Promise<void> => {
         setFilterBorderMargin={setFilterBorderMargin}
         filterPadding={filterPadding}
         setFilterPadding={setFilterPadding}
-      />
+            />
+          </Suspense>
         </details>
       )}
     </>

@@ -111,14 +111,14 @@ export type CameraControlsCardProps = {
   setExtractDebug: (v: string) => void;
   setClassifyDebug: (v: string) => void;
 
-  // OpenCV hello processor
+  // OpenCV (loaded lazily; worker path may still use these params)
   opencvStatus: 'idle' | 'loading' | 'ready' | 'error';
   opencvError: string;
   opencvBuildInfoLine: string;
   opencvReady: boolean;
 
-  isProcessing: boolean;
-  onToggleHelloProcessing: () => void;
+  /** True while a scan pass is in progress (live tick or capture analysis). */
+  busy: boolean;
 
   cannyLow: number;
   setCannyLow: (v: number) => void;
@@ -227,9 +227,7 @@ export function CameraControlsCard(props: CameraControlsCardProps) {
     opencvStatus,
     opencvError,
     opencvBuildInfoLine,
-    opencvReady,
-    isProcessing,
-    onToggleHelloProcessing,
+    busy,
     cannyLow,
     setCannyLow,
     cannyHigh,
@@ -554,13 +552,6 @@ export function CameraControlsCard(props: CameraControlsCardProps) {
   </div>
 
   <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
-    <button className="btn"
-      onClick={onToggleHelloProcessing}
-      disabled={status !== 'live' && !isProcessing}
-    >
-      {isProcessing ? 'Stop OpenCV processing' : 'Start OpenCV processing'}
-    </button>
-
     <label className="rangeField">
       <span className="muted">Canny low</span>
       <input
@@ -568,7 +559,7 @@ export function CameraControlsCard(props: CameraControlsCardProps) {
         min={0}
         max={255}
         value={cannyLow}
-        disabled={!opencvReady}
+        disabled={busy}
         onChange={(e) => setCannyLow(Number(e.target.value))}
       />
       <span className="mono">{cannyLow}</span>
@@ -581,7 +572,7 @@ export function CameraControlsCard(props: CameraControlsCardProps) {
         min={0}
         max={255}
         value={cannyHigh}
-        disabled={!opencvReady}
+        disabled={busy}
         onChange={(e) => setCannyHigh(Number(e.target.value))}
       />
       <span className="mono">{cannyHigh}</span>
@@ -602,7 +593,7 @@ export function CameraControlsCard(props: CameraControlsCardProps) {
   ) : null}
 
   <p className="muted" style={{ marginTop: 10 }}>
-    Tip: Start camera first, then start OpenCV processing to see a live edge preview.
+    Tip: Start the camera, then run segmentation/extraction to see intermediate previews. (In v1 mode, the overlay is shown on the main screen.)
   </p>
 </div>
 
@@ -618,7 +609,7 @@ export function CameraControlsCard(props: CameraControlsCardProps) {
   </div>
 
   <div className="row" style={{ marginTop: 10, gap: 10, flexWrap: 'wrap' }}>
-    <button className="btn btnPrimary" onClick={segmentPiecesNow} disabled={(status !== 'live' && status !== 'captured') || opencvStatus === 'loading' || isProcessing}>
+    <button className="btn btnPrimary" onClick={segmentPiecesNow} disabled={(status !== 'live' && status !== 'captured') || opencvStatus === 'loading' || busy}>
       Segment pieces
     </button>
     <button className="btn" onClick={clearSegmentation} disabled={segPieces.length === 0 && segStatus === 'idle'}>
@@ -684,7 +675,7 @@ export function CameraControlsCard(props: CameraControlsCardProps) {
     <button
       className="btn btnPrimary"
       onClick={extractPiecesNow}
-      disabled={(status !== 'live' && status !== 'captured') || !segResult || segStatus === 'running' || extractStatus === 'running' || isProcessing}
+      disabled={(status !== 'live' && status !== 'captured') || !segResult || segStatus === 'running' || extractStatus === 'running' || busy}
     >
       Extract pieces
     </button>
@@ -692,7 +683,7 @@ export function CameraControlsCard(props: CameraControlsCardProps) {
     <button
       className="btn"
       onClick={classifyPiecesNow}
-      disabled={opencvStatus === 'loading' || isProcessing || extractedPieces.length === 0}
+      disabled={opencvStatus === 'loading' || busy || extractedPieces.length === 0}
     >
       Classify edges/corners
     </button>

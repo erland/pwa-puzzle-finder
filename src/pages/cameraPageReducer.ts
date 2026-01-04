@@ -14,7 +14,6 @@ export type CameraPageState = {
   opencvStatus: OpenCvStatus;
   opencvBuildInfoLine: string;
   opencvError: string;
-  isProcessing: boolean;
   cannyLow: number;
   cannyHigh: number;
 
@@ -84,7 +83,6 @@ export function createInitialCameraPageState(isTestEnv: boolean): CameraPageStat
     opencvStatus: 'idle',
     opencvBuildInfoLine: '',
     opencvError: '',
-    isProcessing: false,
     cannyLow: 60,
     cannyHigh: 120,
 

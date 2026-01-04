@@ -17,7 +17,8 @@ export type V1ControlsProps = {
   onBackToLive: () => void;
   onRescan: () => void;
 
-  isProcessing?: boolean;
+  /** True while a scan pass is in progress (capture analysis). */
+  busy?: boolean;
 
   counts?: {
     total: ScanCounts;
@@ -80,7 +81,7 @@ export function V1Controls(props: V1ControlsProps) {
     onCaptureAndAnalyze,
     onBackToLive,
     onRescan,
-    isProcessing,
+    busy,
     counts,
     showCorners,
     setShowCorners,
@@ -98,7 +99,7 @@ export function V1Controls(props: V1ControlsProps) {
   const isIdle = status === 'idle';
   const isError = status === 'error';
 
-  const busy = Boolean(isProcessing);
+  const isBusy = Boolean(busy);
 
   const actionable = (guidanceItems ?? []).filter((g) => g.level === 'warn' || g.level === 'bad');
   // Prefer showing the most severe + first few items.
@@ -159,27 +160,27 @@ export function V1Controls(props: V1ControlsProps) {
 
         <div className="row" style={{ gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           {(isIdle || isError) && (
-            <button type="button" className="btn btnPrimary" onClick={onStartCamera} disabled={busy}>
+            <button type="button" className="btn btnPrimary" onClick={onStartCamera} disabled={isBusy}>
               {isError ? 'Try again' : 'Start camera'}
             </button>
           )}
           {isLive && (
-            <button type="button" className="btn btnPrimary" onClick={onCaptureAndAnalyze} disabled={busy}>
+            <button type="button" className="btn btnPrimary" onClick={onCaptureAndAnalyze} disabled={isBusy}>
               Capture
             </button>
           )}
           {isCaptured && (
             <>
-              <button type="button" className="btn btnPrimary" onClick={onRescan} disabled={busy}>
+              <button type="button" className="btn btnPrimary" onClick={onRescan} disabled={isBusy}>
                 Re-scan
               </button>
-              <button type="button" className="btn" onClick={onBackToLive} disabled={busy}>
+              <button type="button" className="btn" onClick={onBackToLive} disabled={isBusy}>
                 Back to live
               </button>
             </>
           )}
           {!isIdle && (
-            <button type="button" className="btn" onClick={onStopCamera} disabled={busy}>
+            <button type="button" className="btn" onClick={onStopCamera} disabled={isBusy}>
               Stop
             </button>
           )}
